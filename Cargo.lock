@@ -1112,6 +1112,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "laz"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a1bd8242fad6a61a7520b73d072ddf63dff1f3680e3f5c157b1dc6e8e5ab2ec"
+dependencies = [
+ "byteorder",
+ "num-traits",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2001,6 +2011,7 @@ dependencies = [
  "hmac",
  "jpeg-decoder",
  "jpeg-encoder 0.7.1",
+ "laz",
  "lz4_flex 0.11.6",
  "netcdf-reader",
  "openjp2",
@@ -2055,6 +2066,7 @@ version = "0.0.1"
 dependencies = [
  "numpy",
  "pyo3",
+ "serde",
  "serde_json",
  "terrio",
  "wbraster",
