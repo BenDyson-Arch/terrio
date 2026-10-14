@@ -33,12 +33,12 @@ jobs:
     name: GDAL backend (feature build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: gdal-backend
           # The GDAL the real-data job compares with, and the drivers the tests use.
@@ -56,6 +56,32 @@ jobs:
       - run: pkg-config --modversion gdal
       - run: cargo clippy -p terrio -p terrio-cli --all-targets --features gdal -- -D warnings
       - run: cargo test -p terrio -p terrio-cli --features gdal
+
+  msrv:
+    name: MSRV (Rust 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The `rust-version` of Cargo.toml: keep the two in step.
+      - uses: dtolnay/rust-toolchain@1.90
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  api-docs:
+    name: API docs and packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Documentation builds without warnings (missing docs included)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p terrio --no-deps
+      - name: Doctests
+        run: cargo test -p terrio --doc
+      - name: The crate packages and verifies
+        run: cargo publish -p terrio --dry-run
 
   wasm:
     runs-on: ubuntu-latest
@@ -157,31 +183,20 @@ jobs:
           maturin build --release -m python/Cargo.toml -o python/dist
           python -m pip install --no-deps python/dist/*.whl
           cd python && python -m pytest -v
-      - name: Compare with GDAL
-        # Informational until the format gaps listed in ROADMAP.md are closed.
-        continue-on-error: true
-        shell: micromamba-shell {0}
-        run: python scripts/compare_with_gdal.py terrio-data
-      - name: Round-trip rasters through GDAL
-        continue-on-error: true
-        shell: micromamba-shell {0}
-        run: python scripts/raster_roundtrip.py
-      - name: Compare vector operations with GDAL
-        continue-on-error: true
-        shell: micromamba-shell {0}
-        run: python scripts/compare_vector_ops_with_gdal.py terrio-data
-      - name: Compare Arrow export and import with GDAL, pyarrow and GeoPandas
-        continue-on-error: true
-        shell: micromamba-shell {0}
-        run: python scripts/compare_arrow_with_gdal.py terrio-data
-      - name: Compare GeoPackage updates and spatial filters with GDAL
-        continue-on-error: true
-        shell: micromamba-shell {0}
-        run: python scripts/compare_gpkg_with_gdal.py terrio-data --points 200000
-      - name: Compare terrain tools and raster algebra with GDAL
-        continue-on-error: true
-        shell: micromamba-shell {0}
-        run: python scripts/compare_dem_calc_with_gdal.py terrio-data
       - name: Compare point clouds with laspy and PDAL
         shell: micromamba-shell {0}
         run: python scripts/compare_pointclouds.py terrio-data
+      - name: Conformance suite (every comparison with GDAL, laspy and PDAL)
+        # Informational: differences are listed in the report, not failures. The step fails when
+        # a suite cannot run.
+        shell: micromamba-shell {0}
+        run: |
+          python scripts/conformance.py terrio-data --output conformance.md --json conformance.json --jobs 2
+          cat conformance.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-report
+          path: |
+            conformance.md
+            conformance.json
