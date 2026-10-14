@@ -1,0 +1,15 @@
+[package]
+name = "terrio"
+description = "Pure-Rust geospatial raster and vector data I/O"
+readme = "../../README.md"
+keywords = ["gis", "geospatial", "raster", "vector", "geotiff"]
+categories = ["science::geo", "parser-implementations"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]

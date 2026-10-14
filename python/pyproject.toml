@@ -1,0 +1,20 @@
+[project]
+name = "terrio"
+version = "0.0.1"
+description = "Python bindings for terrio, pure-Rust geospatial data I/O (placeholder)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "Qiusheng Wu", email = "giswqs@gmail.com" }]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+
+[project.urls]
+Repository = "https://github.com/opengeos/terrio"
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"

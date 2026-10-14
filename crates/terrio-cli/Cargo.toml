@@ -1,0 +1,16 @@
+[package]
+name = "terrio-cli"
+description = "Command-line interface for terrio"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "terrio"
+path = "src/main.rs"
+
+[dependencies]
+terrio.workspace = true
