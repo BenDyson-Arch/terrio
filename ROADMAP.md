@@ -94,10 +94,11 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   Arrow IPC streams.
 - Datasets opened from and written to bytes (`terrio::memory`).
 - An optional `gdal` feature that opens anything GDAL can when it is installed, through the same
-  data model.
-- Arrow and GeoArrow import and export for vector layers. Done: `terrio::arrow` (WKB and native
-  GeoArrow encodings, CRS as PROJJSON, Arrow IPC streams), compared with GDAL's Arrow streams,
-  pyarrow and GeoPandas on real files (`scripts/compare_arrow_with_gdal.py`).
+  data model. Done: fallback in `open`, `open_raster`, `open_vector` and `list_layers`, a `GDAL:`
+  prefix and `--driver gdal`, GDAL dataset names and subdatasets, rasters written with any GDAL
+  driver (ERDAS Imagine included). Still to do: vector layers written through GDAL, GDAL opening
+  bytes in memory.
+- Arrow and GeoArrow import and export for vector layers.
 
 ## 1.0: Stable
 

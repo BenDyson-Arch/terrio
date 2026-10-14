@@ -19,6 +19,8 @@ mod dataset;
 mod drivers;
 mod error;
 pub mod formats;
+#[cfg(feature = "gdal")]
+pub mod gdal_backend;
 mod geotiff;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
@@ -35,7 +37,8 @@ pub mod vector;
 
 /// Raster types and resampling methods.
 pub mod raster {
-    pub use wbraster::{ReprojectOptions, ResampleMethod};
+    pub use wbraster::raster::RasterData;
+    pub use wbraster::{CrsInfo, ReprojectOptions, ResampleMethod};
 }
 pub mod stac;
 pub mod vfs;
