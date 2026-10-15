@@ -156,7 +156,16 @@ Python:
   rasterio on the same scripts.
 - xarray integration like rioxarray: a `terrio` backend engine with lazy windowed reads (remote
   COGs read tile by tile, dask chunks), and an accessor with rioxarray's methods (`reproject`,
-  `reproject_match`, `clip`, `clip_box`, `pad_box`, `to_raster`, `merge_arrays`).
+  `reproject_match`, `clip`, `clip_box`, `pad_box`, `to_raster`, `merge_arrays`). Done:
+  `terrio.xarray`, an xarray backend (`engine="terrio"`) and `open_rasterio` reading lazily by
+  window (remote COGs fetch only the tiles needed; dask chunks read in parallel, thread-safe and
+  picklable), with rioxarray's coordinates, `spatial_ref` grid mapping, attributes and encoding
+  (masked, mask_and_scale, overviews, band_as_variable); the `.terrio` accessor with rioxarray's
+  `.rio` methods (CRS, transform, bounds, nodata, `isel_window`, `clip_box`, `clip`, `pad_box`,
+  `reproject`, `reproject_match`, `interpolate_na`, `to_raster` to GeoTIFF, COG and GeoZarr),
+  `merge_arrays` and `merge_datasets`, and an opt-in `.rio` alias; compared with rioxarray on
+  synthetic and real files (257 checks, none differing). Still to do: subdatasets, GCPs and
+  RPCs.
 - Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
 - Streaming vector reads and writes, so layers larger than memory can be converted and filtered.
 - GeoPackage updates in place (appends without rewriting the file).

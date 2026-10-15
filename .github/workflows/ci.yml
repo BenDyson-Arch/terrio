@@ -136,7 +136,8 @@ jobs:
       - name: Install the wheel
         shell: bash
         # rasterio (with its bundled GDAL) and shapely: terrio.rio is compared with rasterio.
-        run: python -m pip install pytest rasterio shapely python/dist/*.whl
+        # xarray, dask, rioxarray, zarr and scipy: terrio.xarray is compared with rioxarray.
+        run: python -m pip install pytest rasterio shapely xarray "dask[array]" rioxarray zarr scipy python/dist/*.whl
       - name: Test
         working-directory: python
         run: python -m pytest -v
@@ -174,6 +175,10 @@ jobs:
       - name: Fetch test data
         shell: micromamba-shell {0}
         run: scripts/fetch_test_data.sh terrio-data
+      - name: Install xarray, dask, rioxarray, zarr and scipy
+        # With pip, on top of the cached environment: terrio.xarray is compared with rioxarray.
+        shell: micromamba-shell {0}
+        run: python -m pip install xarray "dask[array]" rioxarray zarr scipy
       - name: Build
         run: cargo build --release
       - name: Real-data tests
@@ -188,6 +193,11 @@ jobs:
           maturin build --release -m python/Cargo.toml -o python/dist
           python -m pip install --no-deps python/dist/*.whl
           cd python && python -m pytest -v
+      - name: Compare terrio.xarray with rioxarray
+        shell: micromamba-shell {0}
+        run: |
+          python scripts/compare_xarray_with_rioxarray.py terrio-data --output xarray.md
+          cat xarray.md >> "$GITHUB_STEP_SUMMARY"
       - name: Compare point clouds with laspy and PDAL
         shell: micromamba-shell {0}
         run: python scripts/compare_pointclouds.py terrio-data
