@@ -872,6 +872,11 @@ pub fn dem(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<Ra
         return Err(Error::InvalidArgument("combined, multidirectional and Igor shading apply to hillshade only".into()));
     }
     let gt = ds.geo_transform();
+    // Gradients take the pixel sizes from the geotransform's diagonal (as gdaldem does), which a
+    // rotated grid doesn't have.
+    if matches!(product, DemProduct::Hillshade | DemProduct::Slope | DemProduct::Aspect) && (gt[2] != 0.0 || gt[4] != 0.0) {
+        return Err(Error::Unsupported("hillshade, slope and aspect of rotated grids are not supported".into()));
+    }
     let (xscale, yscale) = scales(ds, o);
     let (w, h) = (ds.raster.cols, ds.raster.rows);
     let (out_type, dst_nodata) = match product {
@@ -930,7 +935,12 @@ pub fn dem(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<Ra
     } else {
         values.iter().map(|v| *v as f64).collect()
     };
-    build_raster(Grid::of(&ds.raster), vec![values], out_type, dst_nodata, &ds.crs(), |v, _| v)
+    let mut out = build_raster(Grid::of(&ds.raster), vec![values], out_type, dst_nodata, &ds.crs(), |v, _| v)?;
+    // A rotated or south-up input keeps its geotransform.
+    if let Some(gt) = ds.affine {
+        out.set_geo_transform(gt);
+    }
+    Ok(out)
 }
 
 /// GDAL's conversion of a `Float32` value to a byte: NaN becomes 0, others are rounded half up
@@ -1396,6 +1406,18 @@ mod tests {
 
     fn plane(w: usize, h: usize) -> Vec<f64> {
         (0..h).flat_map(|r| (0..w).map(move |c| (c as f64) * 10.0 + (r as f64) * 5.0)).collect()
+    }
+
+    #[test]
+    fn gradients_of_rotated_grids_are_refused() {
+        let mut ds = dem_ds(plane(6, 5), 6, 5, DataType::F32, None, 10.0);
+        ds.set_geo_transform([0.0, 0.0, 10.0, 0.0, 10.0, 0.0]);
+        for product in [DemProduct::Hillshade, DemProduct::Slope, DemProduct::Aspect] {
+            assert!(matches!(dem(&ds, product, &DemOptions::default()), Err(Error::Unsupported(_))), "{product:?}");
+        }
+        // Window statistics don't use the pixel size, and keep the rotated geotransform.
+        let tri = dem(&ds, DemProduct::Tri, &DemOptions::default()).unwrap();
+        assert_eq!(tri.geo_transform(), [0.0, 0.0, 10.0, 0.0, 10.0, 0.0]);
     }
 
     #[test]

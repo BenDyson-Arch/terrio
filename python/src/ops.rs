@@ -1,6 +1,7 @@
 //! Module-level functions: opening, writing, information, conversion and the processing
 //! operations, with keyword arguments named after the command-line options.
 
+use crate::raster::GcpTuple;
 use crate::raster::{PyRaster, write_options};
 use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
 use crate::{PyResultExt, invalid};
@@ -943,6 +944,12 @@ fn translate(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     gcps: Ground control points georeferencing the (first) source in place of its
+///         geotransform, in its CRS: `(pixel, line, x, y, z)` tuples.
+///     order: The GCP polynomial order (1, 2 or 3; 0 picks GDAL's default), as `-order`.
+///     gcp_method: How the GCPs georeference the source: `"auto"` (GDAL's choice: a homography
+///         from 4 or 5 GCPs, else a polynomial), `"polynomial"`, `"tps"` (as `-tps`) or
+///         `"homography"`.
 ///
 /// Returns:
 ///     Raster: The result, in memory.
@@ -950,7 +957,7 @@ fn translate(
 #[pyo3(signature = (
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, tap=false, resampling="near",
     srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125, format=None,
-    compress=None, tile_size=None, bigtiff=false
+    compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto"
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -975,6 +982,9 @@ fn warp(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    gcps: Option<Vec<GcpTuple>>,
+    order: u32,
+    gcp_method: &str,
 ) -> PyResult<PyRaster> {
     if tap && tr.is_none() {
         return Err(invalid("tap needs tr"));
@@ -1002,6 +1012,9 @@ fn warp(
         cutline,
         crop_to_cutline,
         error_threshold: et,
+        gcps: crate::raster::parse_gcps(gcps),
+        order,
+        gcp_method: terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?,
         ..Default::default()
     };
     let sources = input_rasters(py, src)?;
@@ -1098,7 +1111,7 @@ fn mosaic(
         py.detach(|| {
             let sources: Vec<MosaicSource> = inputs.iter().map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
             let dir = std::path::Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-            terrio::ops::mosaic::build_vrt(&sources, &o, Some(dir))?.write(path)
+            Ok(std::fs::write(path, terrio::ops::mosaic::build_vrt(&sources, &o, Some(dir))?.to_xml())?)
         })
         .py()?;
         return Ok(None);
