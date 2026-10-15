@@ -294,3 +294,86 @@ fn corrupt_geopackages_are_errors_not_panics() {
         }
     }
 }
+
+#[test]
+fn converts_several_layers_to_a_geopackage_like_whole_conversions() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("two.gpkg").to_string_lossy().into_owned();
+    crate::write_vector(&[sample(120), polygons(77)], &src, &Default::default()).unwrap();
+    let options = ConvertOptions { chunk_size: 9, ..Default::default() };
+    let streamed = dir.path().join("s.gpkg").to_string_lossy().into_owned();
+    let whole = dir.path().join("w.gpkg").to_string_lossy().into_owned();
+    assert!(can_convert_stream(&src, &streamed, &options));
+    convert(&src, &streamed, &options).unwrap();
+    crate::write_vector(&crate::open_vector(&src, &Default::default()).unwrap().layers, &whole, &Default::default()).unwrap();
+    let a = crate::open_vector(&whole, &Default::default()).unwrap().layers;
+    let b = crate::open_vector(&streamed, &Default::default()).unwrap().layers;
+    assert_eq!(a.len(), 2);
+    assert_eq!(b.len(), a.len());
+    for (x, y) in a.iter().zip(&b) {
+        same_features(x, y);
+    }
+}
+
+/// OpenStreetMap PBF files convert as streams like whole conversions (with `TERRIO_TEST_DATA`).
+#[test]
+fn converts_osm_like_whole_conversions() {
+    let Some(dir) = std::env::var_os("TERRIO_TEST_DATA") else { return };
+    let src = std::path::Path::new(&dir).join("liechtenstein.osm.pbf").to_string_lossy().into_owned();
+    if !std::path::Path::new(&src).exists() {
+        return;
+    }
+    let out = tempfile::tempdir().unwrap();
+    let whole = crate::open_vector(&src, &Default::default()).unwrap().layers;
+    // All five layers into a GeoPackage.
+    let gpkg = out.path().join("osm.gpkg").to_string_lossy().into_owned();
+    let options = ConvertOptions { chunk_size: 100, ..Default::default() };
+    assert!(can_convert_stream(&src, &gpkg, &options));
+    convert(&src, &gpkg, &options).unwrap();
+    let w = out.path().join("whole.gpkg").to_string_lossy().into_owned();
+    crate::write_vector(&whole, &w, &Default::default()).unwrap();
+    let a = crate::open_vector(&w, &Default::default()).unwrap().layers;
+    let b = crate::open_vector(&gpkg, &Default::default()).unwrap().layers;
+    assert_eq!(a.len(), 5);
+    assert_eq!(b.len(), a.len());
+    for (x, y) in a.iter().zip(&b) {
+        same_features(x, y);
+    }
+    // One layer, filtered and limited, to a FlatGeobuf (profiled first) and to GeoJSON.
+    let translate = VectorTranslateOptions { where_clause: Some("highway IS NOT NULL".into()), limit: Some(500), ..Default::default() };
+    let open = VectorOpenOptions { layers: vec!["lines".into()], ..Default::default() };
+    let lines = crate::ops::vector_filter::translate(&whole[1..2], &translate).unwrap();
+    for ext in ["fgb", "geojson"] {
+        let path = out.path().join(format!("lines.{ext}")).to_string_lossy().into_owned();
+        let options = ConvertOptions { open: open.clone(), translate: translate.clone(), chunk_size: 64, ..Default::default() };
+        convert(&src, &path, &options).unwrap();
+        let w = out.path().join(format!("whole_lines.{ext}")).to_string_lossy().into_owned();
+        crate::write_vector(&lines, &w, &Default::default()).unwrap();
+        assert_eq!(std::fs::read(&w).unwrap(), std::fs::read(&path).unwrap(), "{ext}");
+    }
+    // Several layers into a format holding one.
+    let all = ConvertOptions::default();
+    assert!(convert(&src, &out.path().join("all.fgb").to_string_lossy(), &all).is_err());
+}
+
+/// A vector tile named `.pbf` is not taken for an OpenStreetMap file: it converts whole.
+#[test]
+fn converts_vector_tiles_named_pbf_whole() {
+    use crate::tiles::mvt;
+    let dir = tempfile::tempdir().unwrap();
+    let f = mvt::MvtFeature {
+        id: Some(3),
+        geom_type: mvt::POINT,
+        geometry: mvt::encode_points(&[(100, 200)]),
+        tags: vec![("name".into(), mvt::MvtValue::String("a".into()))],
+        size: 0.0,
+    };
+    let tile = mvt::encode(&[mvt::MvtLayer { name: "l".into(), extent: 4096, features: vec![f] }]);
+    let src = dir.path().join("0.pbf").to_string_lossy().into_owned();
+    std::fs::write(&src, tile).unwrap();
+    let dst = dir.path().join("out.geojson").to_string_lossy().into_owned();
+    let whole = dir.path().join("whole.geojson").to_string_lossy().into_owned();
+    convert(&src, &dst, &ConvertOptions::default()).unwrap();
+    crate::write_vector(&crate::open_vector(&src, &Default::default()).unwrap().layers, &whole, &Default::default()).unwrap();
+    assert_eq!(std::fs::read(&dst).unwrap(), std::fs::read(&whole).unwrap());
+}
