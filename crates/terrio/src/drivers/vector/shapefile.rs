@@ -5,7 +5,7 @@
 //! back to Latin-1 for text that is not UTF-8.
 //!
 //! Writing stores text as UTF-8, declared in a `.cpg` file. Field names are truncated to 10 bytes
-//! and made unique the way GDAL does it (`populati_1`), and field widths follow GDAL's: 9 or 18
+//! and made unique the way `ogr2ogr` does it (`populati_1`, `NAME2`), and field widths follow GDAL's: 9 or 18
 //! digits for integers, 24 with 15 decimals for reals, 80 characters (or the longest value) for
 //! strings.
 
@@ -79,8 +79,15 @@ pub fn parse(shp: &[u8], dbf: Option<&[u8]>, prj: Option<&str>, cpg: Option<&str
         layer.push(Feature { fid: fid as u64, geometry, attributes });
     }
     if let Some(prj) = prj.filter(|s| !s.trim().is_empty()) {
-        SpatialRef::from_wkt(prj.trim()).apply_to_layer(&mut layer);
-        layer.set_crs_wkt(Some(prj.trim().to_string()));
+        // As GDAL's Shapefile driver (FindBestMatch()), the EPSG CRS the `.prj` is identified as,
+        // and otherwise its definition.
+        match SpatialRef::from_wkt(prj.trim()).epsg.and_then(|code| SpatialRef::from_epsg(code).ok()) {
+            Some(s) => s.apply_to_layer(&mut layer),
+            None => {
+                SpatialRef::from_wkt(prj.trim()).apply_to_layer(&mut layer);
+                layer.set_crs_wkt(Some(prj.trim().to_string()));
+            }
+        }
     }
     Ok(layer)
 }
@@ -467,7 +474,14 @@ fn encode_shape(g: &Geometry, st: i32, has_z: bool, total: &mut Bounds) -> Vec<u
     out
 }
 
-/// Field names as GDAL launders them: at most 10 bytes, unique ignoring case.
+/// Field names as `ogr2ogr` writes them into a shapefile, unique ignoring case.
+///
+/// First `ogr2ogr`'s renaming: a name already taken (ignoring case) gets the first number suffix,
+/// from 2, that makes it unique among the names written and the source's names (`NAME` after
+/// `name` becomes `NAME2`, or `NAME3` when the source has a `name2`; the next `Name`, `Name4`).
+/// Then the Shapefile driver's: at most 10 bytes, trailing spaces trimmed and `:` replaced by
+/// `_`, and a name taken by then made unique as `populati_1` to `populati_9`, then
+/// `populati10` to `populati99`.
 pub(crate) fn dbf_field_names(names: &[String]) -> Vec<String> {
     let truncate = |s: &str, n: usize| -> String {
         let mut end = s.len().min(n);
@@ -476,19 +490,40 @@ pub(crate) fn dbf_field_names(names: &[String]) -> Vec<String> {
         }
         s[..end].to_string()
     };
+    let upper = |s: &str| s.to_ascii_uppercase();
+    let sources: std::collections::HashSet<String> = names.iter().map(|n| upper(n)).collect();
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut last_suffix: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut out: Vec<String> = Vec::new();
     for name in names {
-        let taken = |c: &str, out: &[String]| out.iter().any(|o| o.eq_ignore_ascii_case(c));
-        let mut candidate = truncate(name, 10);
+        // ogr2ogr: a numbered name, when the name is taken.
+        let mut name = name.clone();
+        let radix = upper(&name);
+        if taken.contains(&radix) {
+            let mut n = last_suffix.get(&radix).copied().unwrap_or(1);
+            loop {
+                n += 1;
+                let candidate = format!("{radix}{n}");
+                if !taken.contains(&candidate) && !sources.contains(&candidate) {
+                    name = format!("{name}{n}");
+                    last_suffix.insert(radix, n);
+                    break;
+                }
+            }
+        }
+        // The driver: truncated, trimmed and normalized, then made unique.
+        let radix = truncate(&name, 10).trim_end_matches(|c: char| c.is_ascii_whitespace()).replace(':', "_");
+        let mut candidate = radix.clone();
         let mut n = 1;
-        while taken(&candidate, &out) && n < 10 {
-            candidate = format!("{}_{n}", truncate(name, 8));
+        while taken.contains(&upper(&candidate)) && n < 10 {
+            candidate = format!("{}_{n}", truncate(&radix, 8));
             n += 1;
         }
-        while taken(&candidate, &out) && n < 100 {
-            candidate = format!("{}{n:02}", truncate(name, 8));
+        while taken.contains(&upper(&candidate)) && n < 100 {
+            candidate = format!("{}{n:02}", truncate(&radix, 8));
             n += 1;
         }
+        taken.insert(upper(&candidate));
         out.push(candidate);
     }
     out
@@ -628,8 +663,40 @@ mod tests {
 
     #[test]
     fn launders_names_like_gdal() {
-        let names: Vec<String> = ["population_total", "population_totals", "population_totalz", "name", "NAME"].map(String::from).into();
-        assert_eq!(dbf_field_names(&names), ["population", "populati_1", "populati_2", "name", "NAME_1"]);
+        // The names ogr2ogr 3.12 writes into a shapefile from these GeoJSON properties.
+        let names: Vec<String> = [
+            "population_total",
+            "population_totals",
+            "population_totalz",
+            "name",
+            "NAME",
+            "Name",
+            "name2",
+            "abcdefghi :x",
+            "abc:def",
+            "abcdefgh_1",
+            "abcdefghij",
+            "abcdefghijk",
+        ]
+        .map(String::from)
+        .into();
+        assert_eq!(
+            dbf_field_names(&names),
+            [
+                "population",
+                "populati_1",
+                "populati_2",
+                "name",
+                "NAME3",
+                "Name4",
+                "name2",
+                "abcdefghi",
+                "abc_def",
+                "abcdefgh_1",
+                "abcdefghij",
+                "abcdefgh_2"
+            ]
+        );
     }
 
     #[test]
@@ -700,5 +767,29 @@ mod tests {
         let (shp, shx) = encode_shapes(&l).unwrap();
         assert_eq!(shx.len(), 100 + 16);
         assert_eq!(i32::from_le_bytes(shp[32..36].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn takes_the_epsg_crs_of_an_esri_prj() {
+        // GDAL's Shapefile driver replaces an ESRI .prj it identifies by the EPSG CRS, which a
+        // GeoPackage then names EPSG:4326 (srs_id 4326), not a custom CRS.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.shp");
+        let path = path.to_str().unwrap();
+        let mut l = Layer::new("p");
+        l.add_field(FieldDef::new("id", FieldType::Integer));
+        l.push(Feature { fid: 0, geometry: Some(Geometry::point(1.0, 2.0)), attributes: vec![FieldValue::Integer(1)] });
+        write(&l, path).unwrap();
+        let esri = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        std::fs::write(dir.path().join("p.prj"), esri).unwrap();
+        let back = read(path).unwrap();
+        assert_eq!(back.crs_epsg(), Some(4326));
+        assert_eq!(super::super::trusted_epsg(&back), Some(4326));
+        // A .prj matching no EPSG CRS is kept as it is.
+        let custom = r#"PROJCS["custom",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",123456.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",7.3],PARAMETER["Scale_Factor",0.9991],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+        std::fs::write(dir.path().join("p.prj"), custom).unwrap();
+        let back = read(path).unwrap();
+        assert_eq!(back.crs_epsg(), None);
+        assert_eq!(back.crs_wkt(), Some(custom));
     }
 }
