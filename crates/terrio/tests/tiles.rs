@@ -318,3 +318,159 @@ fn remote_webp_tiles() {
     assert_eq!(info.bands.len(), 3);
     assert_eq!(info.overviews.len(), 7);
 }
+
+/// Invalid polygons written as vector tiles, as GDAL writes them: when the polygon encoded in a
+/// tile is invalid, GEOS's `MakeValid` of it; when GEOS fails to clip the polygon to a tile, no
+/// feature in that tile. The feature counts and areas (EPSG:3857, tiles read unclipped) per zoom
+/// level are GDAL 3.12's (`ogr2ogr -dsco MAXZOOM=3`, read with `CLIP=NO`).
+#[test]
+fn invalid_polygons_are_made_valid_as_gdal_does() {
+    use terrio::Geometry;
+    use wbvector::{Coord, Ring};
+    let ring = |pts: &[(f64, f64)]| Ring(pts.iter().map(|&(x, y)| Coord::xy(x, y)).collect());
+    let sq = |x0: f64, y0: f64, x1: f64, y1: f64| ring(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]);
+    let polygon = |rings: Vec<Ring>| {
+        let mut it = rings.into_iter();
+        let exterior = it.next().unwrap();
+        Geometry::Polygon { exterior, interiors: it.collect() }
+    };
+    let shapes = [
+        ("bowtie", polygon(vec![ring(&[(0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0), (0.0, 0.0)])])),
+        ("lobe", polygon(vec![ring(&[(20.0, 1.0), (40.0, 1.0), (40.0, 20.0), (20.0, 20.0), (20.5, 0.6), (20.0, 1.0)])])),
+        ("overlap", Geometry::MultiPolygon(vec![(sq(-30.0, 1.0, -20.0, 11.0), vec![]), (sq(-25.0, 1.0, -15.0, 11.0), vec![])])),
+        ("hole_out", polygon(vec![sq(-60.0, 21.0, -50.0, 31.0), sq(-45.0, 21.0, -40.0, 26.0)])),
+        ("valid", polygon(vec![sq(-100.0, -40.0, -80.0, -20.0), sq(-95.0, -35.0, -90.0, -30.0)])),
+        ("touch", polygon(vec![ring(&[(60.0, 1.0), (80.0, 1.0), (70.0, 11.0), (80.0, 21.0), (60.0, 21.0), (70.0, 11.0), (60.0, 1.0)])])),
+    ];
+    let mut layer = terrio::Layer::new("synth").with_epsg(4326);
+    layer.add_field(terrio::FieldDef::new("name", terrio::FieldType::Text));
+    for (name, g) in shapes {
+        layer.add_feature(Some(g), &[("name", name.into())]).unwrap();
+    }
+    // (zoom, name, features, area) from GDAL.
+    #[rustfmt::skip]
+    let gdal: [(u8, &str, usize, f64); 24] = [
+        (0, "bowtie", 1, 622024133285.7), (0, "lobe", 1, 4760715023191.1), (0, "overlap", 1, 1871433026428.9),
+        (0, "hole_out", 1, 1729663598697.9), (0, "valid", 1, 5412701229994.5), (0, "touch", 1, 2531508035827.3),
+        (1, "bowtie", 1, 624752309308.8), (1, "lobe", 1, 4761026130983.2), (1, "overlap", 1, 1874256927926.5),
+        (1, "hole_out", 1, 1718128679020.9), (1, "valid", 1, 5415429406017.7), (1, "touch", 2, 3080673117336.0),
+        (2, "bowtie", 1, 622021141864.6), (2, "lobe", 1, 4750532225841.4), (2, "overlap", 1, 1868776644511.5),
+        (2, "hole_out", 1, 1718445769655.2), (2, "valid", 2, 6288206419750.0), (2, "touch", 2, 2715277015494.2),
+        (3, "bowtie", 1, 622701690159.8), (3, "lobe", 1, 4757194120582.3), (3, "overlap", 1, 1871516786219.0),
+        (3, "hole_out", 1, 1380151942780.5), (3, "valid", 2, 5846283783889.4), (3, "touch", 1, 2539839891385.0),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("synth.pmtiles");
+    let path = path.to_str().unwrap();
+    let mut o = terrio::VectorWriteOptions::default();
+    o.tiles.max_zoom = Some(3);
+    terrio::write_vector(std::slice::from_ref(&layer), path, &o).unwrap();
+    for z in 0..=3u8 {
+        let mut oo = terrio::VectorOpenOptions::default();
+        oo.tiles.zoom_level = Some(z);
+        oo.tiles.clip = Some(false);
+        let l = &terrio::open_vector(path, &oo).unwrap().layers[0];
+        let name = l.schema.fields().iter().position(|f| f.name == "name").unwrap();
+        for &(zoom, shape, count, area) in gdal.iter().filter(|g| g.0 == z) {
+            let fs: Vec<&terrio::Feature> =
+                l.features.iter().filter(|f| f.attributes[name] == terrio::FieldValue::Text(shape.into())).collect();
+            let a: f64 = fs.iter().filter_map(|f| f.geometry.as_ref()).map(area_of).sum();
+            assert_eq!(fs.len(), count, "zoom {zoom} {shape}");
+            assert!((a - area).abs() < 1e-6 * area, "zoom {zoom} {shape}: {a} vs GDAL's {area}");
+        }
+    }
+}
+
+/// Sudan in Natural Earth's countries is invalid (its ring crosses itself, more so once in Web
+/// Mercator): GDAL writes it made valid at the zoom levels where it fits in one tile, and drops
+/// it from the zoom 4 tile where GEOS fails to clip it. The counts and areas are GDAL 3.12's
+/// (`ogr2ogr -dsco MAXZOOM=4`, read with `CLIP=NO`).
+#[test]
+fn sudan_as_gdal_writes_it() {
+    let Some(src) = data("countries.geojson") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("countries.pmtiles");
+    let path = path.to_str().unwrap();
+    let layers = terrio::open_vector(&src, &Default::default()).unwrap().layers;
+    let mut o = terrio::VectorWriteOptions::default();
+    o.tiles.max_zoom = Some(4);
+    terrio::write_vector(&layers, path, &o).unwrap();
+    let gdal = [(1, 2024928824785.8208), (1, 2017893002410.245), (1, 2021315188123.5366), (1, 2021161877793.287), (2, 102114775992.72226)];
+    for (z, (count, area)) in gdal.into_iter().enumerate() {
+        let mut oo = terrio::VectorOpenOptions::default();
+        oo.tiles.zoom_level = Some(z as u8);
+        oo.tiles.clip = Some(false);
+        let l = &terrio::open_vector(path, &oo).unwrap().layers[0];
+        let key = l.schema.fields().iter().position(|f| f.name == "ADM0_A3").unwrap();
+        let fs: Vec<&terrio::Feature> = l.features.iter().filter(|f| f.attributes[key] == terrio::FieldValue::Text("SDN".into())).collect();
+        let a: f64 = fs.iter().filter_map(|f| f.geometry.as_ref()).map(area_of).sum();
+        assert_eq!(fs.len(), count, "zoom {z}");
+        assert!((a - area).abs() < 1e-6 * area, "zoom {z}: {a} vs GDAL's {area}");
+    }
+}
+
+/// Vector layers added to archives: appended features extend the layer of the same name in the
+/// tiles (the result reads as the layers written at once), new layers are added, `--overwrite`
+/// replaces a layer, and the metadata is merged.
+#[test]
+fn vector_archives_are_updated() {
+    let dir = tempfile::tempdir().unwrap();
+    let all = points_layer();
+    let mut first = all.clone();
+    first.features.truncate(2);
+    let mut second = all.clone();
+    second.features.drain(..2);
+    for ext in ["pmtiles", "mbtiles"] {
+        let path = dir.path().join(format!("u.{ext}"));
+        let path = path.to_str().unwrap();
+        let mut o = terrio::VectorWriteOptions::default();
+        o.tiles.max_zoom = Some(4);
+        terrio::write_vector(std::slice::from_ref(&first), path, &o).unwrap();
+        let mode = terrio::ops::vector_filter::WriteMode::Append;
+        terrio::ops::vector_filter::write_vector_with_mode(std::slice::from_ref(&second), path, &o, mode).unwrap();
+        let mut other = points_layer();
+        other.name = "other".into();
+        terrio::ops::vector_filter::write_vector_with_mode(std::slice::from_ref(&other), path, &o, mode).unwrap();
+        let v = terrio::open_vector(path, &Default::default()).unwrap();
+        let names: Vec<&str> = v.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["places", "other"], "{ext}");
+        assert_eq!(v.layers[0].len(), 4, "{ext}");
+        assert_eq!(v.layers[1].len(), 4, "{ext}");
+        let fields: Vec<&str> = v.layers[0].schema.fields().iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(fields, ["mvt_id", "name", "rank"]);
+        // Overwrite: the layer replaced in every tile.
+        let mode = terrio::ops::vector_filter::WriteMode::Overwrite;
+        terrio::ops::vector_filter::write_vector_with_mode(std::slice::from_ref(&first), path, &o, mode).unwrap();
+        let v = terrio::open_vector(path, &Default::default()).unwrap();
+        assert_eq!(v.layers.iter().map(|l| (l.name.as_str(), l.len())).collect::<Vec<_>>(), [("places", 2), ("other", 4)], "{ext}");
+    }
+}
+
+/// A raster added to an archive of image tiles: laid over the existing tiles at the archive's
+/// highest zoom level, the extent grown, the lower zoom levels computed again.
+#[test]
+fn raster_archives_are_updated() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = rgb_raster();
+    // A raster 3 tiles to the right of the base's.
+    let mut right = rgb_raster();
+    let res = base.geo_transform()[1];
+    right.raster.x_min += 768.0 * res;
+    for ext in ["pmtiles", "mbtiles"] {
+        let path = dir.path().join(format!("r.{ext}"));
+        let path = path.to_str().unwrap();
+        terrio::write_raster_dataset(&base, path, &Default::default()).unwrap();
+        terrio::tiles::update_raster(path, &right, &Default::default()).unwrap();
+        let mut lazy = terrio::open_raster_lazy(path).unwrap();
+        assert_eq!((lazy.width(), lazy.height()), (1536, 512), "{ext}");
+        let all = lazy.read().unwrap();
+        let w = 1536;
+        // The left half is the base, the right half the added raster (the same pixels).
+        let band = all.raster.band_view(0);
+        let px = band.as_slice();
+        for (x, y) in [(5, 7), (700, 300), (768 + 5, 7), (768 + 700, 300)] {
+            assert_eq!(px[y * w + x] as usize, ((x % 768) * 3 + y * 5) % 251, "{ext} ({x}, {y})");
+        }
+        assert_eq!(lazy.overviews().len(), 2, "{ext}");
+    }
+}
