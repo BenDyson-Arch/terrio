@@ -1,6 +1,8 @@
 //! TIFF compressions the `tiff` crate does not decode, read as GDAL (libtiff) reads them: LERC
 //! (alone, or wrapped in Deflate or Zstandard), JPEG XL and LZMA. And JPEG, decoded as libjpeg
-//! decodes it for GDAL ([`crate::jpeg`]), YCbCr converted to RGB.
+//! decodes it for GDAL ([`crate::jpeg`]), YCbCr converted to RGB. And unsigned samples packed in
+//! 9 to 31 bits (GDAL's `NBITS`, as written for Sentinel-2's 15-bit bands), in any of the
+//! lossless compressions, read as UInt16 or UInt32 as GDAL reads them.
 
 use std::io::{Read, Seek, SeekFrom};
 use tiff::decoder::{ChunkType, Decoder, DecodingResult};
@@ -22,6 +24,9 @@ enum Codec {
     Jxl,
     Lzma,
     Jpeg,
+    /// Unsigned samples of 9 to 31 bits (not 16), packed MSB first with each row starting on a
+    /// byte, under compression `.0`.
+    Packed(u16),
 }
 
 /// A sample type of the TIFF image.
@@ -71,6 +76,66 @@ impl Sample {
     }
 }
 
+/// Decompresses a chunk coded with one of TIFF's lossless compressions, into at most `limit`
+/// bytes: a stream that would expand further is cut there (it cannot be a valid chunk), and one
+/// that ends short is an error rather than missing pixels.
+fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8>> {
+    let mut out = Vec::new();
+    // Reads at most `limit` bytes of a decompressing reader.
+    let bounded = |r: &mut dyn Read, out: &mut Vec<u8>| r.take(limit as u64).read_to_end(out).map(|_| ());
+    match compression {
+        1 => out = raw,
+        5 => {
+            out.resize(limit, 0);
+            let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
+            let (mut consumed, mut written) = (0, 0);
+            while written < limit {
+                let r = dec.decode_bytes(&raw[consumed..], &mut out[written..]);
+                consumed += r.consumed_in;
+                written += r.consumed_out;
+                match r.status.map_err(|e| invalid(format!("LZW: {e}")))? {
+                    weezl::LzwStatus::Done => break,
+                    weezl::LzwStatus::NoProgress if r.consumed_in == 0 && r.consumed_out == 0 => break,
+                    _ => {}
+                }
+            }
+            out.truncate(written);
+        }
+        8 | 32946 => bounded(&mut flate2::read::ZlibDecoder::new(&raw[..]), &mut out)?,
+        LZMA => bounded(&mut lzma_rust2::XzReader::new(&raw[..], true), &mut out).map_err(|e| invalid(format!("LZMA: {e}")))?,
+        50000 => {
+            let mut src = &raw[..];
+            let mut z = ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| invalid(format!("Zstandard: {e}")))?;
+            bounded(&mut z, &mut out)?;
+        }
+        32773 => {
+            // PackBits: a count byte n, then n + 1 literal bytes (n >= 0) or one byte repeated
+            // 1 - n times (n < 0, -128 skipped).
+            let mut i = 0;
+            while i < raw.len() && out.len() < limit {
+                let n = raw[i] as i8;
+                i += 1;
+                if n >= 0 {
+                    let end = (i + n as usize + 1).min(raw.len());
+                    out.extend_from_slice(&raw[i..end]);
+                    i = end;
+                } else if n != -128 {
+                    if let Some(&b) = raw.get(i) {
+                        out.extend(std::iter::repeat_n(b, (1 - isize::from(n)) as usize));
+                    }
+                    i += 1;
+                }
+            }
+        }
+        other => return Err(invalid(format!("TIFF compression {other} with packed samples is not supported"))),
+    }
+    if out.len() < limit {
+        return Err(invalid(format!("TIFF chunk decompressed to {} bytes, {limit} expected", out.len())));
+    }
+    out.truncate(limit);
+    Ok(out)
+}
+
 /// An error with a message, as the `tiff` crate reports I/O errors.
 fn invalid(msg: impl Into<String>) -> TiffError {
     TiffError::IoError(std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into()))
@@ -90,6 +155,10 @@ pub(crate) struct ChunkCodec {
     sample: Sample,
     big_endian: bool,
     predictor: u16,
+    /// The bits of a sample in the file.
+    bits: u16,
+    /// `FillOrder` 2: the bits of each byte are stored least significant first.
+    lsb_first: bool,
     /// LERC: the compression wrapping the blobs (0 none, 1 Deflate, 2 Zstandard).
     lerc_wrapper: u32,
     /// LERC: the last sample is an alpha channel, coded as the blob's mask.
@@ -105,7 +174,10 @@ impl ChunkCodec {
     /// its chunks itself.
     pub(crate) fn new<R: Read + Seek>(dec: &mut Decoder<R>) -> TiffResult<Option<Self>> {
         let compression = dec.find_tag_unsigned::<u16>(Tag::Compression)?.unwrap_or(1);
+        let first = |v: Option<Vec<u16>>, default: u16| v.and_then(|v| v.first().copied()).unwrap_or(default);
+        let packed_bits = first(dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample)?, 1);
         let codec = match compression {
+            _ if (9..32).contains(&packed_bits) && packed_bits != 16 => Codec::Packed(compression),
             LERC => Codec::Lerc,
             JXL | JXL_DNG => Codec::Jxl,
             LZMA => Codec::Lzma,
@@ -121,16 +193,33 @@ impl ChunkCodec {
         let (cw, ch) = dec.chunk_dimensions();
         let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel)?.unwrap_or(1).max(1) as usize;
         let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration)? == Some(2);
-        let first = |v: Option<Vec<u16>>, default: u16| v.and_then(|v| v.first().copied()).unwrap_or(default);
-        let bits = first(dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample)?, 1);
+        let bits = packed_bits;
         let format = first(dec.find_tag_unsigned_vec::<u16>(Tag::SampleFormat)?, 1);
         let spp = if planar { 1 } else { samples };
         // JPEG of 8-bit samples: 12-bit JPEG is left to the `tiff` crate.
         if codec == Codec::Jpeg && bits != 8 {
             return Ok(None);
         }
-        let sample = Sample::new(format, bits)
-            .ok_or_else(|| invalid(format!("TIFF compression {compression} with {bits}-bit samples (format {format}) is not supported")))?;
+        let sample = match codec {
+            Codec::Packed(_) if format != 1 => {
+                return Err(invalid(format!("TIFF samples of {bits} bits (format {format}) are not supported")));
+            }
+            Codec::Packed(_) => {
+                if bits <= 16 {
+                    Sample::U16
+                } else {
+                    Sample::U32
+                }
+            }
+            _ => Sample::new(format, bits).ok_or_else(|| {
+                invalid(format!("TIFF compression {compression} with {bits}-bit samples (format {format}) is not supported"))
+            })?,
+        };
+        let predictor = dec.find_tag_unsigned::<u16>(Tag::Predictor)?.unwrap_or(1);
+        // libtiff's predictors need 8, 16, 32 or 64-bit samples.
+        if matches!(codec, Codec::Packed(_)) && predictor != 1 {
+            return Err(invalid(format!("TIFF predictor {predictor} with {bits}-bit samples is not supported")));
+        }
         let extra = dec.find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)?.unwrap_or_default();
         let lerc_wrapper = match codec {
             Codec::Lerc => dec.find_tag_unsigned_vec::<u32>(Tag::Unknown(LERC_PARAMETERS))?.and_then(|p| p.get(1).copied()).unwrap_or(0),
@@ -145,7 +234,9 @@ impl ChunkCodec {
             spp,
             sample,
             big_endian: dec.byte_order() == tiff::tags::ByteOrder::BigEndian,
-            predictor: dec.find_tag_unsigned::<u16>(Tag::Predictor)?.unwrap_or(1),
+            predictor,
+            bits,
+            lsb_first: dec.find_tag_unsigned::<u16>(Tag::FillOrder)? == Some(2),
             lerc_wrapper,
             lerc_alpha: !planar && samples > 1 && extra.last() == Some(&2) && sample == Sample::U8,
             jpeg_tables: match codec {
@@ -188,8 +279,44 @@ impl ChunkCodec {
             Codec::Lerc => self.lerc(raw, w, h)?,
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
+            Codec::Packed(compression) => {
+                let row_bytes = (w * self.spp).checked_mul(usize::from(self.bits)).map(|b| b.div_ceil(8));
+                let size = row_bytes.and_then(|r| r.checked_mul(h)).ok_or_else(|| invalid("TIFF chunk too large"))?;
+                self.unpack(&decompress(compression, raw, size)?, w, h)
+            }
         };
         Ok(self.result(&bytes, w, dw, dh))
+    }
+
+    /// Unpacks `h` rows of `w` pixels of samples of `self.bits` bits, MSB first with each row
+    /// starting on a byte (as libtiff packs them; with `FillOrder` 2 each byte's bits are
+    /// reversed first), into native-endian samples of the output type.
+    fn unpack(&self, packed: &[u8], w: usize, h: usize) -> Vec<u8> {
+        let bits = usize::from(self.bits);
+        let per_row = w * self.spp;
+        let row_bytes = (per_row * bits).div_ceil(8);
+        let size = self.sample.size();
+        let mut out = vec![0u8; h * per_row * size];
+        for r in 0..h {
+            let row = packed.get(r * row_bytes..).unwrap_or(&[]);
+            for i in 0..per_row {
+                let mut v: u32 = 0;
+                let first = i * bits;
+                for b in first..first + bits {
+                    // FillOrder 2 stores each byte's bits least significant first.
+                    let byte = row.get(b / 8).map_or(0, |&x| if self.lsb_first { x.reverse_bits() } else { x });
+                    let bit = (byte >> (7 - b % 8)) & 1;
+                    v = (v << 1) | u32::from(bit);
+                }
+                let at = (r * per_row + i) * size;
+                if size == 2 {
+                    out[at..at + 2].copy_from_slice(&(v as u16).to_ne_bytes());
+                } else {
+                    out[at..at + 4].copy_from_slice(&v.to_ne_bytes());
+                }
+            }
+        }
+        out
     }
 
     /// Undoes a predictor on native-endian samples, row by row.
@@ -436,6 +563,81 @@ fn pixels_f64(p: &lerc_core::PixelData) -> Vec<f64> {
 mod tests {
     use super::*;
 
+    fn packed(bits: u16, spp: usize) -> ChunkCodec {
+        ChunkCodec {
+            codec: Codec::Packed(1),
+            offsets: vec![],
+            counts: vec![],
+            tiled: false,
+            chunk: (0, 0),
+            spp,
+            sample: if bits <= 16 { Sample::U16 } else { Sample::U32 },
+            big_endian: false,
+            predictor: 1,
+            bits,
+            lsb_first: false,
+            lerc_wrapper: 0,
+            lerc_alpha: false,
+            jpeg_tables: vec![],
+            ycbcr: false,
+        }
+    }
+
+    /// Packs samples MSB first, each row starting on a byte, as libtiff does.
+    fn pack(rows: &[Vec<u32>], bits: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for row in rows {
+            let mut bitbuf = vec![0u8; (row.len() * bits).div_ceil(8)];
+            for (i, v) in row.iter().enumerate() {
+                for b in 0..bits {
+                    if v >> (bits - 1 - b) & 1 == 1 {
+                        let at = i * bits + b;
+                        bitbuf[at / 8] |= 0x80 >> (at % 8);
+                    }
+                }
+            }
+            out.extend(bitbuf);
+        }
+        out
+    }
+
+    #[test]
+    fn unpacks_packed_samples_by_row() {
+        // 15 and 12 bits (UInt16) and 24 bits (UInt32), with rows that end mid-byte.
+        for (bits, max) in [(15u16, (1u32 << 15) - 1), (12, 4095), (24, (1 << 24) - 1)] {
+            let rows: Vec<Vec<u32>> = (0..3).map(|r| (0..5).map(|c| (r * 7919 + c * 104_729) % (max + 1)).collect()).collect();
+            let codec = packed(bits, 1);
+            let bytes = codec.unpack(&pack(&rows, bits as usize), 5, 3);
+            let got: Vec<u32> = match codec.result(&bytes, 5, 5, 3) {
+                DecodingResult::U16(v) => v.into_iter().map(u32::from).collect(),
+                DecodingResult::U32(v) => v,
+                _ => unreachable!(),
+            };
+            assert_eq!(got, rows.concat(), "{bits} bits");
+        }
+    }
+
+    #[test]
+    fn reads_lsb_first_bytes() {
+        // FillOrder 2: the same packed samples with each byte's bits reversed.
+        let rows = vec![vec![1u32, 32_767, 12_345, 7], vec![0, 1 << 14, 3, 32_000]];
+        let mut codec = packed(15, 1);
+        codec.lsb_first = true;
+        let lsb: Vec<u8> = pack(&rows, 15).iter().map(|b| b.reverse_bits()).collect();
+        let DecodingResult::U16(got) = codec.result(&codec.unpack(&lsb, 4, 2), 4, 4, 2) else { unreachable!() };
+        assert_eq!(got.iter().map(|v| u32::from(*v)).collect::<Vec<_>>(), rows.concat());
+    }
+
+    #[test]
+    fn decompresses_packbits() {
+        // A literal run of 3, a repeat of 4, the -128 no-op, a literal of 1.
+        let raw = vec![2, 1, 2, 3, 0xFD, 9, 0x80, 0, 7];
+        assert_eq!(decompress(32773, raw.clone(), 8).unwrap(), vec![1, 2, 3, 9, 9, 9, 9, 7]);
+        // A chunk that ends short is an error; one that would expand further is cut.
+        assert!(decompress(32773, raw.clone(), 9).is_err());
+        assert_eq!(decompress(32773, raw, 4).unwrap(), vec![1, 2, 3, 9]);
+    }
+
     #[test]
     fn floating_point_predictor_is_undone() {
         let codec = ChunkCodec {
@@ -448,6 +650,8 @@ mod tests {
             sample: Sample::F32,
             big_endian: false,
             predictor: 3,
+            bits: 32,
+            lsb_first: false,
             lerc_wrapper: 0,
             lerc_alpha: false,
             jpeg_tables: Vec::new(),
