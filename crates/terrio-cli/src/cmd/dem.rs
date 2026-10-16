@@ -1,10 +1,11 @@
 //! `terrio dem`.
 
-use super::rasterout::{OutputArgs, open};
+use super::rasterout::{OutputArgs, open, open_lazy, same_file};
 use terrio::Error;
 use terrio::formats::RasterDriver;
 use terrio::ops::dem::{
-    ColorMap, ColorSelection, DemOptions, DemProduct, GradientAlg, Shading, TriAlg, color_relief, color_relief_vrt, dem, pam_statistics,
+    ColorMap, ColorSelection, DemOptions, DemProduct, GradientAlg, Shading, TriAlg, color_relief, color_relief_vrt, dem, dem_to_path,
+    pam_statistics,
 };
 
 #[derive(clap::Args)]
@@ -134,18 +135,23 @@ pub fn run(a: Args) -> terrio::Result<()> {
     if vrt && colors.is_none() {
         return Err(Error::InvalidArgument("VRT output is only supported for color-relief".into()));
     }
-    let ds = open(input)?;
-    let out = match colors {
-        Some(path) => {
-            let text =
-                std::fs::read_to_string(path).map_err(|e| Error::InvalidArgument(format!("cannot read the color file '{path}': {e}")))?;
-            let map = ColorMap::parse(&text, &ds, o.band, pam_statistics(input, o.band))?;
-            if vrt {
-                return color_relief_vrt(&ds, input, &map, &o, Some(output))?.write(output);
-            }
-            color_relief(&ds, &map, &o)?
+    // Terrain products a strip at a time, without holding the DEM or the output whole.
+    let colors = match (colors, product) {
+        // The DEM read whole first when it is also the output.
+        (None, Some(product)) if same_file(input, output) => return a.out.write(&dem(&open(input)?, product, &o)?, output),
+        (None, Some(product)) => {
+            let mut src = open_lazy(input)?;
+            return super::quiet(|| dem_to_path(&mut src, product, &o, output, &a.out.options()?));
         }
-        None => dem(&ds, product.expect("not color-relief"), &o)?,
+        (Some(colors), None) => colors,
+        _ => unreachable!("color-relief alone takes a color file"),
     };
-    a.out.write(&out, output)
+    let ds = open(input)?;
+    let text =
+        std::fs::read_to_string(colors).map_err(|e| Error::InvalidArgument(format!("cannot read the color file '{colors}': {e}")))?;
+    let map = ColorMap::parse(&text, &ds, o.band, pam_statistics(input, o.band))?;
+    if vrt {
+        return color_relief_vrt(&ds, input, &map, &o, Some(output))?.write(output);
+    }
+    a.out.write(&color_relief(&ds, &map, &o)?, output)
 }
