@@ -152,6 +152,7 @@ mod histogram;
 pub mod http;
 pub mod info;
 mod jpeg;
+mod memfs;
 pub mod memory;
 pub mod ops;
 mod par;
@@ -159,6 +160,7 @@ mod pixel;
 pub mod pointcloud;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3;
+pub mod sparse;
 mod tiff_codecs;
 pub mod tiles;
 pub mod vector;

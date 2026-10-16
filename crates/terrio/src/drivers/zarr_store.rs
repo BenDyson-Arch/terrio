@@ -92,7 +92,7 @@ fn join_key(base: &str, rel: &str) -> String {
 
 /// Whether a local directory is a Zarr node.
 fn local_node(p: &Path) -> bool {
-    p.is_dir() && METADATA_FILES.iter().any(|f| p.join(f).is_file())
+    crate::memfs::is_dir(p) && METADATA_FILES.iter().any(|f| crate::memfs::is_file(&p.join(f)))
 }
 
 impl Store {
@@ -106,6 +106,17 @@ impl Store {
             Backend::Local(root) => {
                 use std::io::{Read, Seek, SeekFrom};
                 let p = if key.is_empty() { root.clone() } else { root.join(key) };
+                if crate::memfs::is_virtual(&p) {
+                    // In memory: the whole file, then the range of it.
+                    let Ok(all) = crate::memfs::read(&p) else { return Ok(None) };
+                    let len = all.len() as u64;
+                    let (start, end) = match range {
+                        Range::Whole => (0, len),
+                        Range::At(offset, n) => (offset.min(len), offset.saturating_add(n).min(len)),
+                        Range::Suffix(n) => (len.saturating_sub(n), len),
+                    };
+                    return Ok(Some(all[start as usize..end as usize].to_vec()));
+                }
                 let mut f = match std::fs::File::open(&p) {
                     Ok(f) if p.is_file() => f,
                     Ok(_) => return Ok(None),
@@ -337,12 +348,9 @@ impl Node {
         #[allow(irrefutable_let_patterns)]
         if let Backend::Local(root) = &self.store.backend {
             let dir = if self.key.is_empty() { root.clone() } else { root.join(&self.key) };
-            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                if e.path().is_dir()
-                    && let Some(n) = e.file_name().to_str()
-                    && !out.iter().any(|o| o == n)
-                {
-                    out.push(n.to_string());
+            for (n, _) in crate::memfs::subdirs(&dir) {
+                if !out.contains(&n) {
+                    out.push(n);
                 }
             }
         }

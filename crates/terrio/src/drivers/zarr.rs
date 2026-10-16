@@ -25,6 +25,7 @@
 use super::common;
 use super::zarr_store::{Node, Range};
 use crate::formats::RasterDriver;
+use crate::memfs;
 use crate::{Error, RasterDataset, Result};
 use serde_json::{Value, json};
 use std::io::Read;
@@ -38,7 +39,7 @@ fn bad(msg: impl std::fmt::Display) -> Error {
 
 /// Whether a directory is a Zarr store (or array).
 pub(crate) fn is_zarr(path: &Path) -> bool {
-    path.is_dir() && [".zgroup", ".zarray", "zarr.json"].iter().any(|f| path.join(f).is_file())
+    memfs::is_dir(path) && [".zgroup", ".zarray", "zarr.json"].iter().any(|f| memfs::is_file(&path.join(f)))
 }
 
 /// A decompression step.
@@ -1515,7 +1516,7 @@ fn copy_rows(a: &NewArray, idx: &[usize], chunk: &mut [u8]) {
 
 /// Writes one array (metadata and chunks), returning its metadata documents by file name.
 fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Version) -> Result<Vec<(String, Value)>> {
-    std::fs::create_dir_all(dir)?;
+    memfs::create_dir_all(dir)?;
     let (codec, compressor_meta) = compressor(compression, version)?;
     let (size, nd) = (a.data_type.size_bytes(), a.shape.len());
     let grid: Vec<usize> = a.shape.iter().zip(a.chunks).map(|(s, c)| s.div_ceil(*c)).collect();
@@ -1558,12 +1559,12 @@ fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Ver
                     p.push(n);
                 }
                 if let Some(parent) = p.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    memfs::create_dir_all(parent)?;
                 }
                 p
             }
         };
-        std::fs::write(file, compress(&codec, chunk)?)?;
+        memfs::write(&file, compress(&codec, chunk)?)?;
         Ok(())
     });
     results.into_iter().collect::<Result<Vec<()>>>()?;
@@ -1610,7 +1611,7 @@ fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Ver
         }
     };
     for (name, doc) in &docs {
-        std::fs::write(dir.join(name), serde_json::to_string_pretty(doc).unwrap_or_default())?;
+        memfs::write(&dir.join(name), serde_json::to_string_pretty(doc).unwrap_or_default())?;
     }
     Ok(docs)
 }
@@ -1662,18 +1663,18 @@ fn spatial_attrs(r: &Raster, dims: [&str; 2], attrs: &mut Value) {
 
 /// Writes a group's metadata documents.
 fn write_group(dir: &Path, attrs: &Value, version: Version, meta: &mut serde_json::Map<String, Value>, prefix: &str) -> Result<()> {
-    std::fs::create_dir_all(dir)?;
+    memfs::create_dir_all(dir)?;
     match version {
         Version::V2 => {
             let zgroup = json!({"zarr_format": 2});
-            std::fs::write(dir.join(".zgroup"), serde_json::to_string_pretty(&zgroup).unwrap_or_default())?;
-            std::fs::write(dir.join(".zattrs"), serde_json::to_string_pretty(attrs).unwrap_or_default())?;
+            memfs::write(&dir.join(".zgroup"), serde_json::to_string_pretty(&zgroup).unwrap_or_default())?;
+            memfs::write(&dir.join(".zattrs"), serde_json::to_string_pretty(attrs).unwrap_or_default())?;
             meta.insert(format!("{prefix}.zgroup"), zgroup);
             meta.insert(format!("{prefix}.zattrs"), attrs.clone());
         }
         Version::V3 => {
             let group = json!({"zarr_format": 3, "node_type": "group", "attributes": attrs});
-            std::fs::write(dir.join("zarr.json"), serde_json::to_string_pretty(&group).unwrap_or_default())?;
+            memfs::write(&dir.join("zarr.json"), serde_json::to_string_pretty(&group).unwrap_or_default())?;
         }
     }
     Ok(())
@@ -1891,7 +1892,7 @@ pub(crate) fn write_with(r: &Raster, nodata: Option<f64>, path: &Path, compressi
     };
     // Fail on an unknown compression before creating anything.
     compressor(compression, version)?;
-    if path.exists() {
+    if memfs::exists(path) {
         return Err(Error::InvalidArgument(format!("{} already exists", path.display())));
     }
     let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("data").to_string();
@@ -1968,7 +1969,7 @@ pub(crate) fn write_with(r: &Raster, nodata: Option<f64>, path: &Path, compressi
     }
     if version == Version::V2 {
         let consolidated = json!({"metadata": meta, "zarr_consolidated_format": 1});
-        std::fs::write(path.join(".zmetadata"), serde_json::to_string_pretty(&consolidated).unwrap_or_default())?;
+        memfs::write(&path.join(".zmetadata"), serde_json::to_string_pretty(&consolidated).unwrap_or_default())?;
     }
     Ok(())
 }

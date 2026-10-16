@@ -21,7 +21,7 @@ pub(crate) mod hdfeos;
 mod hfa;
 pub(crate) mod jp2;
 pub(crate) mod netcdf;
-mod netcdf_write;
+pub(crate) mod netcdf_write;
 pub(crate) mod nodata;
 mod png;
 mod rst;
@@ -31,7 +31,7 @@ pub(crate) mod sqlite_edit;
 pub(crate) mod vector;
 pub(crate) mod wkt;
 mod xyz;
-mod zarr;
+pub(crate) mod zarr;
 mod zarr_store;
 
 /// Reads a raster with one of terrio's own drivers. `None` when none of them handles the file.

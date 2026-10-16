@@ -389,7 +389,13 @@ fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
 /// Outside CDF-5 and netCDF-4, UInt32 and 64-bit integers are written as doubles, as GDAL writes
 /// them. With `GROUP`, the variables go in that netCDF-4 group.
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Options) -> Result<()> {
-    write_groups(&[(options.group.unwrap_or(""), r, nodata)], path, options)
+    std::fs::write(path, to_bytes(r, nodata, options)?)?;
+    Ok(())
+}
+
+/// Encodes a raster as a NetCDF file: see [`write`].
+pub(crate) fn to_bytes(r: &Raster, nodata: Option<f64>, options: &Options) -> Result<Vec<u8>> {
+    groups_to_bytes(&[(options.group.unwrap_or(""), r, nodata)], options)
 }
 
 /// The format a file is written in, and the deflate level when compressed.
@@ -428,6 +434,12 @@ fn version_of(options: &Options, groups: bool) -> Result<(Version, Option<u32>)>
 /// and grid mapping there, as the netCDF library writes groups. Groups need netCDF-4: `FORMAT`
 /// defaults to `NC4` when any raster is below the root.
 pub(crate) fn write_groups(rasters: &[(&str, &Raster, Option<f64>)], path: &Path, options: &Options) -> Result<()> {
+    std::fs::write(path, groups_to_bytes(rasters, options)?)?;
+    Ok(())
+}
+
+/// Encodes rasters as one netCDF file, each in its group: see [`write_groups`].
+fn groups_to_bytes(rasters: &[(&str, &Raster, Option<f64>)], options: &Options) -> Result<Vec<u8>> {
     let group_of = |g: &str| g.trim_matches('/').to_string();
     let any_group = rasters.iter().any(|(g, ..)| !group_of(g).is_empty());
     for (i, (g, ..)) in rasters.iter().enumerate() {
@@ -474,8 +486,7 @@ pub(crate) fn write_groups(rasters: &[(&str, &Raster, Option<f64>)], path: &Path
         }
         _ => encode(version, &dims, &globals, &vars),
     };
-    std::fs::write(path, bytes)?;
-    Ok(())
+    Ok(bytes)
 }
 
 /// The dimensions and variables of one raster, as GDAL writes them.
