@@ -114,8 +114,7 @@ impl SpatialRef {
         }
         // Checks that terrio can transform with it.
         Def::from_proj(proj4)?;
-        let wkt = wbp::from_proj_string(proj4).ok().map(|c| wbp::crs_to_wkt(&c));
-        Ok(Self { epsg: None, wkt, proj4: Some(proj4.to_string()) })
+        Ok(Self { epsg: None, wkt: proj_to_wkt(proj4), proj4: Some(proj4.to_string()) })
     }
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
@@ -199,7 +198,7 @@ impl SpatialRef {
                 .or_else(|| epsg::vertical(code).map(|v| v.wkt.clone()))
                 .or_else(|| wbp::to_ogc_wkt(code).ok());
         }
-        self.proj4.as_deref().and_then(|p| wbp::from_proj_string(p).ok()).map(|c| wbp::crs_to_wkt(&c))
+        self.proj4.as_deref().and_then(proj_to_wkt)
     }
 
     /// The CRS's name, such as `WGS 84 / UTM zone 33N`.
@@ -294,6 +293,27 @@ impl SpatialRef {
         layer.set_crs_epsg(self.epsg);
         layer.set_crs_wkt(self.to_wkt());
     }
+}
+
+/// The WKT of a PROJ string.
+fn proj_to_wkt(p: &str) -> Option<String> {
+    wbp::from_proj_string(&mercator_lat_ts_as_k(p)).ok().map(|c| wbp::crs_to_wkt(&c))
+}
+
+/// A PROJ string whose Mercator standard parallel (`+lat_ts`) is given as the scale at the
+/// equator it implies (`+k`): wbprojection's Mercator has no standard parallel, so its WKT would
+/// otherwise describe the equator's Mercator (EPSG:3395's projection).
+fn mercator_lat_ts_as_k(p: &str) -> std::borrow::Cow<'_, str> {
+    let tokens: Vec<&str> = p.split_whitespace().collect();
+    let lat_ts = tokens.iter().find_map(|t| t.strip_prefix("+lat_ts=")).and_then(|v| v.parse::<f64>().ok());
+    let (true, Some(ts)) = (tokens.contains(&"+proj=merc"), lat_ts) else { return p.into() };
+    let Ok(crs) = wbp::from_proj_string(p) else { return p.into() };
+    let (sin, e2) = (ts.to_radians().sin(), crs.datum.ellipsoid.e2);
+    let k = ts.to_radians().cos() / (1.0 - e2 * sin * sin).sqrt();
+    let kept = tokens.iter().filter(|t| !t.starts_with("+lat_ts=") && !t.starts_with("+k=") && !t.starts_with("+k_0="));
+    let mut out: Vec<String> = kept.map(|t| t.to_string()).collect();
+    out.push(format!("+k={k}"));
+    out.join(" ").into()
 }
 
 impl std::fmt::Display for SpatialRef {
@@ -672,6 +692,20 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mercator_standard_parallel_survives_wkt() {
+        // On another ellipsoid, and with a +k that the standard parallel overrides. (wbprojection
+        // writes a spherical Mercator as Mercator_Auxiliary_Sphere, without its scale.)
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        for p in ["+proj=merc +lat_ts=-41 +lon_0=20 +ellps=intl +units=m", "+proj=merc +lat_ts=30 +k=1 +datum=WGS84 +units=m"] {
+            let crs = SpatialRef::from_proj4(p).unwrap();
+            let from_wkt = SpatialRef::parse(&crs.to_wkt().unwrap()).unwrap();
+            let (x, y) = Transformer::new(&wgs84, &crs).unwrap().transform(25.0, -50.0).unwrap();
+            let (wx, wy) = Transformer::new(&wgs84, &from_wkt).unwrap().transform(25.0, -50.0).unwrap();
+            assert!((x - wx).abs() < 1e-3 && (y - wy).abs() < 1e-3, "{p}: ({x}, {y}) vs ({wx}, {wy})");
+        }
+    }
 
     #[test]
     fn declared_codes_win() {
