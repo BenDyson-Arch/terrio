@@ -43,10 +43,28 @@ use crate::{Error, Result};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use wbvector::{Feature, Layer};
+use wbvector::{Feature, FieldValue, Layer};
 
 /// The default number of features in a chunk.
 pub const DEFAULT_CHUNK: usize = 65536;
+
+/// The most a chunk holds, about, in bytes: a chunk stops there even short of the number of
+/// features asked for, so that layers of large geometries are read in bounded memory.
+pub const CHUNK_BYTES: usize = 64 << 20;
+
+/// The raw bytes (WKB and record payloads) a source reads into a batch, at most about: an eighth
+/// of [`CHUNK_BYTES`], as a coordinate of 16 bytes in WKB takes 48 decoded, and batches small
+/// next to a chunk keep the features buffered beyond it few.
+const SOURCE_BYTES: usize = CHUNK_BYTES / 8;
+
+/// The memory a feature takes, about: its coordinates and its values (without their text, which
+/// large geometries outweigh).
+fn feature_size(f: &Feature) -> usize {
+    let coords = f.geometry.as_ref().map_or(0, fgb::coord_count);
+    std::mem::size_of::<Feature>()
+        + coords * std::mem::size_of::<wbvector::Coord>()
+        + f.attributes.len() * std::mem::size_of::<FieldValue>()
+}
 
 /// A source of features, read a batch at a time.
 trait FeatureSource: Send {
@@ -70,13 +88,15 @@ pub fn schema_of(layer: &Layer) -> Layer {
 pub struct FeatureReader {
     layer: Layer,
     source: Box<dyn FeatureSource>,
-    buffer: VecDeque<Feature>,
+    /// The features read ahead, with their sizes (see [`feature_size`]), and the sum of those.
+    buffer: VecDeque<(Feature, usize)>,
+    buffered: usize,
     done: bool,
 }
 
 impl FeatureReader {
     fn new(layer: Layer, source: Box<dyn FeatureSource>) -> Self {
-        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), done: false }
+        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), buffered: 0, done: false }
     }
 
     /// The layer, without its features: its name, fields, geometry type and CRS.
@@ -85,26 +105,36 @@ impl FeatureReader {
     }
 
     fn fill(&mut self, n: usize) -> Result<()> {
-        while !self.done && self.buffer.len() < n {
+        while !self.done && self.buffer.len() < n && self.buffered < CHUNK_BYTES {
             match self.source.next_batch()? {
-                Some(batch) => self.buffer.extend(batch),
+                Some(batch) => {
+                    let sizes = crate::par::map_range(batch.len(), |i| feature_size(&batch[i]));
+                    self.buffered += sizes.iter().sum::<usize>();
+                    self.buffer.extend(batch.into_iter().zip(sizes));
+                }
                 None => self.done = true,
             }
         }
         Ok(())
     }
 
-    /// The next chunk of at most `max` features, as a layer with this layer's fields; `None`
-    /// once every feature has been read.
+    /// The next chunk of at most `max` features, and of about [`CHUNK_BYTES`] at most (at least
+    /// one feature), as a layer with this layer's fields; `None` once every feature has been
+    /// read.
     pub fn read_chunk(&mut self, max: usize) -> Result<Option<Layer>> {
         let max = max.max(1);
         self.fill(max)?;
         if self.buffer.is_empty() {
             return Ok(None);
         }
-        let n = max.min(self.buffer.len());
+        let (mut n, mut size) = (0, 0);
+        while n < max.min(self.buffer.len()) && (n == 0 || size < CHUNK_BYTES) {
+            size += self.buffer[n].1;
+            n += 1;
+        }
+        self.buffered -= size;
         let mut chunk = schema_of(&self.layer);
-        chunk.features = self.buffer.drain(..n).collect();
+        chunk.features = self.buffer.drain(..n).map(|(f, _)| f).collect();
         Ok(Some(chunk))
     }
 
@@ -125,9 +155,12 @@ impl Iterator for FeatureReader {
         if let Err(e) = self.fill(1) {
             self.done = true;
             self.buffer.clear();
+            self.buffered = 0;
             return Some(Err(e));
         }
-        self.buffer.pop_front().map(Ok)
+        let (f, size) = self.buffer.pop_front()?;
+        self.buffered -= size;
+        Some(Ok(f))
     }
 }
 
@@ -481,8 +514,8 @@ struct FgbSource {
 
 impl FeatureSource for FgbSource {
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
-        let mut raw = Vec::new();
-        while raw.len() < self.batch {
+        let (mut raw, mut bytes) = (Vec::new(), 0);
+        while raw.len() < self.batch && bytes < SOURCE_BYTES {
             let mut len = [0u8; 4];
             if read_full(&mut self.r, &mut len)? < 4 {
                 break;
@@ -494,6 +527,7 @@ impl FeatureSource for FgbSource {
             if buf.len() < 4 + n {
                 return Err(Error::InvalidData("FlatGeobuf: truncated feature".into()));
             }
+            bytes += buf.len();
             raw.push(buf);
         }
         if raw.is_empty() {
@@ -555,9 +589,13 @@ impl FeatureSource for GpkgSource {
         let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
         match &mut self.rows {
             GpkgRows::Scan(cursor) => {
-                while rows.len() < self.batch {
+                let mut bytes = 0;
+                while rows.len() < self.batch && bytes < SOURCE_BYTES {
                     match cursor.next_leaf(&self.db)? {
-                        Some(leaf) => rows.extend(leaf),
+                        Some(leaf) => {
+                            bytes += leaf.iter().map(|(_, p)| p.len()).sum::<usize>();
+                            rows.extend(leaf);
+                        }
                         None => break,
                     }
                 }
@@ -565,9 +603,11 @@ impl FeatureSource for GpkgSource {
             GpkgRows::Lookup { root, ids } => {
                 // Ids without a row (stale R-tree entries) are skipped: only the end of the ids
                 // ends the stream.
-                while rows.len() < self.batch {
+                let mut bytes = 0;
+                while rows.len() < self.batch && bytes < SOURCE_BYTES {
                     let Some(id) = ids.next() else { break };
                     if let Some(p) = gpkg_read::Tables::lookup(&self.db, *root, id)? {
+                        bytes += p.len();
                         rows.push((id, p));
                     }
                 }
@@ -640,6 +680,10 @@ fn open_layers_whole(path: &str, options: &VectorOpenOptions, batch: usize) -> R
 /// A destination of features, written a chunk at a time.
 trait FeatureSink: Send {
     fn write(&mut self, chunk: &Layer) -> Result<()>;
+    /// Writes a chunk the sink may keep.
+    fn write_owned(&mut self, chunk: Layer) -> Result<()> {
+        self.write(&chunk)
+    }
     fn finish(self: Box<Self>) -> Result<()>;
 }
 
@@ -735,6 +779,12 @@ impl FeatureWriter {
     /// Writes a chunk of features (a layer with the fields given to [`FeatureWriter::create`]).
     pub fn write(&mut self, chunk: &Layer) -> Result<()> {
         self.sink.write(chunk)
+    }
+
+    /// Writes a chunk of features, as [`FeatureWriter::write`], without copying those the
+    /// writer keeps.
+    pub(crate) fn write_owned(&mut self, chunk: Layer) -> Result<()> {
+        self.sink.write_owned(chunk)
     }
 
     /// Completes the file.
@@ -969,6 +1019,11 @@ struct WholeSink {
 impl FeatureSink for WholeSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
         self.layer.features.extend(chunk.features.iter().cloned());
+        Ok(())
+    }
+
+    fn write_owned(&mut self, chunk: Layer) -> Result<()> {
+        self.layer.features.extend(chunk.features);
         Ok(())
     }
 
@@ -1448,7 +1503,8 @@ pub struct ConvertOptions {
     pub translate: VectorTranslateOptions,
     /// How to write the output.
     pub write: VectorWriteOptions,
-    /// The number of features read, translated and written at a time.
+    /// The number of features read, translated and written at a time (fewer when they take
+    /// more than [`CHUNK_BYTES`]).
     pub chunk_size: usize,
 }
 
@@ -1565,7 +1621,7 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
         while !translator.is_done()
             && let Some(c) = reader.read_chunk(chunk)?
         {
-            writer.write(&translator.apply(c)?)?;
+            writer.write_owned(translator.apply(c)?)?;
         }
         writer.finish()
     })();
@@ -1705,7 +1761,7 @@ fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOp
             if translator.is_done() {
                 return Ok(());
             }
-            writer.write(&translator.apply(chunk_of(l, features))?)
+            writer.write_owned(translator.apply(chunk_of(l, features))?)
         })?;
         writer.finish()
     })();
