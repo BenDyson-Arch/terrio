@@ -79,3 +79,39 @@ def test_exit_codes(tmp_path):
     failure = run("info", str(tmp_path / "missing.tif"))
     assert failure.returncode == 1
     assert failure.stderr.startswith("terrio: ")
+
+
+def test_mcp(tmp_path):
+    (tmp_path / "points.geojson").write_text(json.dumps(POINTS))
+    messages = [
+        {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "info",
+                "arguments": {"args": [str(tmp_path / "points.geojson"), "--json"]},
+            },
+        },
+    ]
+    with subprocess.Popen(
+        [sys.executable, "-m", "terrio", "mcp"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as server:
+        for m in messages:
+            server.stdin.write(json.dumps(m) + "\n")
+        server.stdin.flush()
+        # Read every reply before closing standard input, which stops the commands running.
+        replies = {r["id"]: r for r in (json.loads(server.stdout.readline()) for _ in messages)}
+        server.stdin.close()
+        assert server.wait() == 0
+    assert replies[0]["result"]["serverInfo"]["name"] == "terrio"
+    assert "convert" in [t["name"] for t in replies[1]["result"]["tools"]]
+    # The tool ran `python -m terrio info`, with this interpreter.
+    info = replies[2]["result"]
+    assert not info["isError"], info
+    assert "points" in info["content"][0]["text"]
