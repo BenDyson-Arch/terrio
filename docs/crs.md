@@ -33,10 +33,19 @@ whatever the axis order the authority defines.
 
 ## Identification
 
-When a dataset stores WKT without an EPSG code, as shapefiles do, terrio identifies the code. When
-several codes match equally, it prefers the base datum over its later realizations (NAD83 over
-NAD83(HARN) and NAD83(2011)) unless the WKT names one, then the lowest code. This is what GDAL
-reports: the New York City boroughs shapefile is EPSG:2263 in both.
+When a dataset stores WKT without an EPSG code, as shapefiles do, terrio identifies the code: an
+EPSG CRS on the WKT's datum, known by its `AUTHORITY` or its name (official, alias, or ESRI's:
+`D_European_1950` is ED50, `D_ETRS_1989` is ETRS89), with the same conversion and units. When
+several codes match, it prefers the one named as the WKT's CRS, then (for a projected CRS) the one
+with its axis order, then the base datum over its later realizations (NAD83 over NAD83(HARN) and
+NAD83(2011)) unless the WKT names one, then the lowest code. CRSs that terrio's EPSG table lacks or
+whose projection it cannot compare are looked up in wbprojection's registry, on the same datum,
+with the last two preferences. This is what GDAL reports: the New York City boroughs shapefile is
+EPSG:2263 in both, and ESRI's `GCS_European_1950` is EPSG:4230.
+
+A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Bessel 1841
+ellipsoid`, as GDAL and PROJ write a PROJ string's `+ellps=bessel`) gets no EPSG code and no datum
+shift, as in GDAL: the CRS is used as it is.
 
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,

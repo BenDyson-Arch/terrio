@@ -320,6 +320,11 @@ impl Def {
                     && (self.rot.is_none() || (self.lam0 - other.lam0).abs() < 1e-12)
             }
             (Some(_), Some(_)) => {
+                // In the same unit (a State Plane zone in US survey feet is not the one in metres).
+                let ratio = self.to_meter / other.to_meter;
+                if !ratio.is_finite() || (ratio - 1.0).abs() > 1e-9 {
+                    return false;
+                }
                 let lat0 = self.phi0.to_degrees().clamp(-89.0, 89.0);
                 let lon0 = (self.lam0 + self.pm).to_degrees();
                 for dlon in [-0.5, 0.0, 0.5] {
