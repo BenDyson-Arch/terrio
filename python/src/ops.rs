@@ -90,7 +90,8 @@ fn data_type(name: &str) -> PyResult<DataType> {
 ///     UnsupportedError: If the format is not recognized.
 #[pyfunction]
 fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
-    let ds = py.detach(|| terrio::open(path)).py()?;
+    // Warnings are issued whether the open succeeds or not, so none is left for a later call.
+    let ds = crate::with_warnings(py, || terrio::open(path))?;
     dataset_to_py(py, ds)
 }
 
@@ -107,14 +108,17 @@ fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
 ///
 /// Raises:
 ///     UnsupportedError: If the dataset is not a raster.
+///
+/// Warns:
+///     UserWarning: If the raster declares a CRS terrio cannot represent (it then has none).
 #[pyfunction]
 #[pyo3(signature = (path, lazy=false))]
 fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
     if lazy {
-        let r = py.detach(|| terrio::open_raster_lazy(path)).py()?;
+        let r = crate::with_warnings(py, || terrio::open_raster_lazy(path))?;
         return Ok(PyRaster { inner: r });
     }
-    let ds = py.detach(|| terrio::open_raster(path)).py()?;
+    let ds = crate::with_warnings(py, || terrio::open_raster(path))?;
     Ok(PyRaster::from_dataset(ds))
 }
 
@@ -391,7 +395,7 @@ fn convert(
         Some(None) => None,
         _ => Some(vector_write_options(format)?),
     };
-    py.detach(|| -> terrio::Result<()> {
+    crate::with_warnings(py, || -> terrio::Result<()> {
         // Vector conversions between formats read and written as streams go a chunk of
         // features at a time, in bounded memory.
         if srcwin.is_none() && overview.is_none() && mode == WriteMode::Create && !terrio::tiles::is_archive(src) {
@@ -459,7 +463,6 @@ fn convert(
             }
         }
     })
-    .py()
 }
 
 /// Opens the layers given to an operation: a path, or layers in memory.
@@ -482,7 +485,7 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
 /// Opens the raster given to an operation: a path, or a `Raster`.
 pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<RasterDataset> {
     match src.extract::<String>() {
-        Ok(path) => py.detach(|| terrio::open_raster(&path)).py(),
+        Ok(path) => crate::with_warnings(py, || terrio::open_raster(&path)),
         Err(_) => {
             let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
             r.with_dataset(|ds| Ok(ds.clone())).py()
