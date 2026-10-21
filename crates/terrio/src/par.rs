@@ -29,6 +29,18 @@ pub(crate) fn map_range<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync + Send)
     }
 }
 
+/// Maps `f` over mutable items in parallel, keeping the order.
+pub(crate) fn map_mut<T: Send, R: Send>(items: &mut [T], f: impl Fn(&mut T) -> R + Sync + Send) -> Vec<R> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        items.par_iter_mut().map(f).collect()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        items.iter_mut().map(f).collect()
+    }
+}
+
 /// Calls `f` on each item of an owned list with its index, in parallel.
 pub(crate) fn for_each_owned<T: Send>(items: Vec<T>, f: impl Fn(usize, T) + Sync + Send) {
     #[cfg(not(target_arch = "wasm32"))]

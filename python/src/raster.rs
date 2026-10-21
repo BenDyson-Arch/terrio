@@ -422,8 +422,8 @@ impl PyRaster {
     ///     colormap: The color table of a single-band Byte or UInt16 GeoTIFF: `(r, g, b, a)`
     ///         entries from index 0.
     ///     overviews: GeoTIFF overviews to build, as decimation factors such as `[2, 4]`.
-    ///     overview_resampling: `"nearest"` (the default), `"average"`, `"min"`, `"max"` or
-    ///         `"mode"`.
+    ///     overview_resampling: `"nearest"`, `"average"`, `"min"`, `"max"` or `"mode"`.
+    ///         Defaults to `"nearest"` for GeoTIFF and `"average"` for COG.
     ///     gcps: GeoTIFF ground control points, in the raster's CRS: `(pixel, line, x, y, z)`
     ///         tuples, written as tie points instead of the geotransform.
     ///     mask: A per-dataset validity mask, a 2-D uint8 array (0 for invalid pixels), written

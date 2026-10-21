@@ -578,7 +578,10 @@ pub struct RasterWriteOptions {
     pub color_table: Vec<[u8; 4]>,
     /// GeoTIFF overviews to build, as decimation factors such as `[2, 4, 8]`.
     pub overviews: Vec<usize>,
-    /// The overview resampling: `nearest` (the default), `average`, `min`, `max` or `mode`.
+    /// Overview resampling: `nearest`, `average`, `min`, `max` or `mode`. Defaults to `nearest`
+    /// for GeoTIFF and `average` for COG. COG levels reduce full-resolution blocks independently:
+    /// nearest takes their center sample; averages skip nodata and weight colors by alpha when
+    /// `ALPHA=YES` (alpha itself is averaged without that weight).
     pub overview_resampling: Option<String>,
     /// The geotransform to write in place of the raster's own: a rotated or south-up one, which
     /// GeoTIFFs store in a `ModelTransformationTag`, as GDAL writes them.
