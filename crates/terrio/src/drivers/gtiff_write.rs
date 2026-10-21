@@ -1129,6 +1129,48 @@ fn chunk_bytes<T: Pixel>(data: &[T], cols: usize, rows: usize, spp: usize, x0: u
     buf
 }
 
+/// Accumulates a source block in row order, keeping sums local instead of updating shared row
+/// buffers for every source sample. Alpha is a weight only for color bands.
+#[inline]
+fn average_block<T: Pixel>(
+    band: &[T],
+    alpha: Option<&[T]>,
+    cols: usize,
+    (x0, x1): (usize, usize),
+    (y0, y1): (usize, usize),
+    nodata: Option<f64>,
+    (mut sum, mut weight): (f64, f64),
+) -> (f64, f64) {
+    if let Some(alpha) = alpha {
+        for y in y0..y1 {
+            let span = y * cols + x0..y * cols + x1;
+            for (&sample, &a) in band[span.clone()].iter().zip(&alpha[span]) {
+                let v = sample.to_f64();
+                if v.is_nan() || nodata.is_some_and(|nd| v == nd) {
+                    continue;
+                }
+                let a = a.to_f64();
+                if !a.is_finite() || a <= 0.0 || nodata.is_some_and(|nd| a == nd) {
+                    continue;
+                }
+                sum += v * a;
+                weight += a;
+            }
+        }
+    } else {
+        for y in y0..y1 {
+            for &sample in &band[y * cols + x0..y * cols + x1] {
+                let v = sample.to_f64();
+                if !v.is_nan() && !nodata.is_some_and(|nd| v == nd) {
+                    sum += v;
+                    weight += 1.0;
+                }
+            }
+        }
+    }
+    (sum, weight)
+}
+
 /// Native categorical samples must not pass through f64 (notably UInt64 above 2^53).
 struct CategoricalRow<T> {
     values: Vec<T>,
@@ -1186,7 +1228,9 @@ impl CogOverview {
     /// Consumes consecutive source rows and returns band-major output rows of the same type.
     /// Nearest emits a row when its center arrives; other methods wait for the whole block.
     fn write_rows(&mut self, data: &RasterData, rows: usize) -> RasterData {
-        let out = if matches!(self.method, OverviewResampling::Nearest | OverviewResampling::Average) {
+        let out = if self.method == OverviewResampling::Average {
+            map_data!(data, v => self.average(v, rows))
+        } else if self.method == OverviewResampling::Nearest {
             map_data!(data, v => self.reduce(v, rows, None))
         } else {
             macro_rules! categorical {
@@ -1218,6 +1262,58 @@ impl CogOverview {
             }
         };
         self.received += rows;
+        out
+    }
+
+    /// Complete output rows are independent; only an unfinished source block needs persistent
+    /// accumulation. Each cell visits source samples in the same order across slab boundaries.
+    fn average<T: Pixel>(&mut self, src: &[T], rows: usize) -> Vec<T> {
+        let (cols, factor, bands) = (self.cols, self.factor, self.bands);
+        let out_cols = cols.div_ceil(factor);
+        let received = self.received;
+        let end = received + rows;
+        let first = received / factor;
+        let completed = if end == self.rows { end.div_ceil(factor) } else { end / factor };
+        let out_rows = completed - first;
+        let band_len = cols * rows;
+        let nodata = self.nodata;
+        let fill = nodata.unwrap_or(0.0);
+        let alpha = self.alpha.then(|| &src[(bands - 1) * band_len..]);
+        let (sums, weights) = (&self.sums, &self.weights);
+        let mut out = vec![T::default(); out_cols * out_rows * bands];
+        crate::par::chunks_mut(&mut out, out_cols, |i, line| {
+            let (b, r) = (i / out_rows, i % out_rows);
+            let band = &src[b * band_len..(b + 1) * band_len];
+            let alpha = alpha.filter(|_| b + 1 < bands);
+            let block_y = (first + r) * factor;
+            let y0 = block_y.saturating_sub(received);
+            let y1 = (block_y + factor).min(end) - received;
+            for (c, o) in line.iter_mut().enumerate() {
+                let k = b * out_cols + c;
+                let carry = if block_y < received { (sums[k], weights[k]) } else { (0.0, 0.0) };
+                let x0 = c * factor;
+                let (sum, weight) = average_block(band, alpha, cols, (x0, (x0 + factor).min(cols)), (y0, y1), nodata, carry);
+                *o = T::from_f64(if weight == 0.0 { fill } else { sum / weight });
+            }
+        });
+        if end < self.rows && !end.is_multiple_of(factor) {
+            let y0 = (end / factor * factor).saturating_sub(received);
+            for b in 0..bands {
+                let band = &src[b * band_len..(b + 1) * band_len];
+                let alpha = alpha.filter(|_| b + 1 < bands);
+                for c in 0..out_cols {
+                    let k = b * out_cols + c;
+                    let carry = if out_rows == 0 { (self.sums[k], self.weights[k]) } else { (0.0, 0.0) };
+                    let x0 = c * factor;
+                    let (sum, weight) = average_block(band, alpha, cols, (x0, (x0 + factor).min(cols)), (y0, rows), nodata, carry);
+                    self.sums[k] = sum;
+                    self.weights[k] = weight;
+                }
+            }
+        } else {
+            self.sums.fill(0.0);
+            self.weights.fill(0.0);
+        }
         out
     }
 
@@ -1267,19 +1363,6 @@ impl CogOverview {
                     }
                     let k = b * out_cols + x / factor;
                     match self.method {
-                        OverviewResampling::Average => {
-                            let w = if self.alpha && b + 1 < bands {
-                                let a = src[((bands - 1) * rows + y) * cols + x].to_f64();
-                                if !a.is_finite() || a <= 0.0 || self.nodata.is_some_and(|nd| a == nd) {
-                                    continue;
-                                }
-                                a
-                            } else {
-                                1.0
-                            };
-                            self.sums[k] += v * w;
-                            self.weights[k] += w;
-                        }
                         OverviewResampling::Min | OverviewResampling::Max => {
                             let values = &mut categorical.as_mut().unwrap().values;
                             if self.weights[k] == 0.0
@@ -1305,7 +1388,7 @@ impl CogOverview {
                                 self.weights[k] = count as f64;
                             }
                         }
-                        OverviewResampling::Nearest => unreachable!(),
+                        OverviewResampling::Nearest | OverviewResampling::Average => unreachable!(),
                     }
                 }
             }
@@ -1318,14 +1401,11 @@ impl CogOverview {
                     let k = b * out_cols + x;
                     out[(b * out_rows + r) * out_cols + x] = if self.weights[k] == 0.0 {
                         T::from_f64(self.nodata.unwrap_or(0.0))
-                    } else if let Some(state) = &categorical {
-                        state.values[k]
                     } else {
-                        T::from_f64(self.sums[k] / self.weights[k])
+                        categorical.as_ref().unwrap().values[k]
                     };
                 }
             }
-            self.sums.fill(0.0);
             self.weights.fill(0.0);
             if let Some(state) = &mut categorical {
                 for counts in &mut state.counts {
@@ -2809,6 +2889,132 @@ mod tests {
                 }
                 assert_eq!(actual, expected, "{bands} bands, average factor {factor}");
             }
+        }
+    }
+
+    fn assert_cog_float_average_source_order(data_type: DataType, bands: usize) {
+        let (cols, rows, pixels) = (65, 35, 65 * 35);
+        let nodata = -9999.0;
+        let alpha = bands > 1;
+        let mut source = vec![0.0; pixels * bands];
+        for band in 0..bands {
+            for y in 0..rows {
+                for x in 0..cols {
+                    let i = y * cols + x;
+                    let pattern = (y % 2) * 2 + x % 2;
+                    let value = if alpha && band + 1 == bands {
+                        if (24..32).contains(&x) && y < 8 { 0.0 } else { [0.0, 0.125, 0.5, 1.0][(x + 3 * y) % 4] }
+                    } else if (16..24).contains(&x) && y < 8 {
+                        // Values near a Float32 rounding boundary, without intermediate rounding.
+                        1.0 + [0.0, 2.0f64.powi(-23), 0.0, 0.0][pattern]
+                    } else {
+                        // Cancellation makes reassociation, column-major traversal and combining
+                        // separately summed rows observably different even after a Float32 cast.
+                        let large = 2.0f64.powi(60) * (band + 1) as f64;
+                        [large, (i % 29 + 1) as f64 * 0.125, -large, (i % 31 + 1) as f64 * 0.25][pattern]
+                    };
+                    source[band * pixels + i] = if (8..16).contains(&x) && y < 8 || (i + band * 13) % 47 == 0 {
+                        nodata
+                    } else if (i + band * 7) % 53 == 0 {
+                        f64::NAN
+                    } else {
+                        value
+                    };
+                }
+            }
+        }
+        let data = match data_type {
+            DataType::F32 => {
+                let values: Vec<f32> = source.iter().map(|&v| v as f32).collect();
+                source = values.iter().map(|&v| v as f64).collect();
+                RasterData::F32(values)
+            }
+            DataType::F64 => RasterData::F64(source.clone()),
+            _ => unreachable!(),
+        };
+        let raster = overview_fixture(bands, data_type, data);
+        let opts = TiffOptions {
+            cog: true,
+            tile_size: Some(16),
+            compression: Compression::None,
+            overview_resampling: OverviewResampling::Average,
+            nodata: Some(nodata),
+            alpha,
+            photometric: (bands == 4).then_some(2),
+            ..Default::default()
+        };
+        let whole = encode(&raster, &opts).unwrap();
+        let mut lazy = crate::LazyRaster::from_tiff_bytes(whole.clone()).unwrap().unwrap();
+        let dimensions = lazy.overviews();
+        assert_eq!(dimensions, vec![(33, 18), (17, 9), (9, 5)]);
+        for (level, (out_cols, out_rows)) in dimensions.into_iter().enumerate() {
+            let factor = 1usize << (level + 1);
+            let overview = lazy
+                .read_window(crate::Window::new(0, 0, out_cols, out_rows), &crate::WindowOptions { bands: vec![], overview: Some(level) })
+                .unwrap();
+            let actual: Vec<u64> = match overview.raster.data {
+                RasterData::F32(values) if data_type == DataType::F32 => values.into_iter().map(|v| v.to_bits() as u64).collect(),
+                RasterData::F64(values) if data_type == DataType::F64 => values.into_iter().map(f64::to_bits).collect(),
+                _ => panic!("expected {data_type:?} overview"),
+            };
+            for band in 0..bands {
+                for y in 0..out_rows {
+                    for x in 0..out_cols {
+                        // Independent direct-source reference: each block is accumulated in source
+                        // row-major order, retaining f64 sums and weights until the final cast.
+                        let (mut sum, mut weight) = (0.0, 0.0);
+                        for i in overview_source_block(x, y, factor) {
+                            let value = source[band * pixels + i];
+                            if value.is_nan() || value == nodata {
+                                continue;
+                            }
+                            let w = if alpha && band + 1 < bands {
+                                let a = source[(bands - 1) * pixels + i];
+                                if !a.is_finite() || a <= 0.0 || a == nodata {
+                                    continue;
+                                }
+                                a
+                            } else {
+                                1.0
+                            };
+                            sum += value * w;
+                            weight += w;
+                        }
+                        let expected = if weight == 0.0 { nodata } else { sum / weight };
+                        let expected = if data_type == DataType::F32 { (expected as f32).to_bits() as u64 } else { expected.to_bits() };
+                        assert_eq!(
+                            actual[(band * out_rows + y) * out_cols + x],
+                            expected,
+                            "{data_type:?}, {bands} bands, factor {factor}, band {band}, ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for step in [1, 3, 7, 8, 16, 31, rows] {
+            let path = dir.path().join("average.tif");
+            let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+            for y in (0..rows).step_by(step) {
+                let h = step.min(rows - y);
+                writer.write_rows(slice_rows(&raster.data, rows, y..y + h, cols, bands), h).unwrap();
+            }
+            writer.finish().unwrap();
+            assert!(std::fs::read(path).unwrap() == whole, "{data_type:?}, {bands} bands, rows by {step}");
+        }
+    }
+
+    #[test]
+    fn cog_float32_average_pixels_preserve_source_order_across_slabs() {
+        for bands in [1, 2, 4] {
+            assert_cog_float_average_source_order(DataType::F32, bands);
+        }
+    }
+
+    #[test]
+    fn cog_float64_average_pixels_preserve_source_order_across_slabs() {
+        for bands in [1, 2, 4] {
+            assert_cog_float_average_source_order(DataType::F64, bands);
         }
     }
 
