@@ -66,6 +66,20 @@ pub fn run(args: Vec<OsString>) -> i32 {
 /// `-m terrio`, for the Python package), for `terrio mcp` to run its tools with. `None` is this
 /// executable.
 pub fn run_as(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
+    // On a thread of its own with Linux's 8 MiB stack: Windows gives its main thread 1 MiB, which
+    // the debug build's deep frames (clap's parser, `terrio mcp`) can overflow.
+    std::thread::Builder::new()
+        .name("terrio".into())
+        .stack_size(STACK_SIZE)
+        .spawn(move || run_on_this_thread(args, terrio))
+        .map_or(1, |t| t.join().unwrap_or(101))
+}
+
+/// The stack of the thread that runs a command.
+const STACK_SIZE: usize = 8 << 20;
+
+/// [`run_as`], on the calling thread.
+fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
     let cli = match Cli::try_parse_from(cmd::calc::rewrite_args(args)) {
         Ok(cli) => cli,
         Err(e) => {
