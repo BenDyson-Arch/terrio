@@ -33,12 +33,21 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      # The notices, which maturin finds in python/ (by the default license-files globs, LICENSE*
+      # and NOTICE*) with python/LICENSE, a copy of LICENSE kept in the repository. Not gitignored:
+      # maturin leaves ignored files out of the sdist.
+      - name: Add the notices
+        shell: bash
+        run: cp NOTICE LICENSE-THIRD-PARTY.md python/
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: python
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
           args: --release --out dist
+      - name: Check that the wheel carries the license files
+        shell: bash
+        run: python .github/scripts/check-license-files.py python/dist/*.whl
       - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}-${{ matrix.platform.manylinux }}
@@ -48,11 +57,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # The notices, which maturin finds in python/ (by the default license-files globs, LICENSE*
+      # and NOTICE*) with python/LICENSE, a copy of LICENSE kept in the repository. Not gitignored:
+      # maturin leaves ignored files out of the sdist.
+      - name: Add the notices
+        shell: bash
+        run: cp NOTICE LICENSE-THIRD-PARTY.md python/
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: python
           command: sdist
           args: --out dist
+      - name: Check that the sdist carries the license files
+        run: python3 .github/scripts/check-license-files.py python/dist/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
           name: sdist
@@ -84,6 +101,8 @@ jobs:
       - uses: mymindstorm/setup-emsdk@v16
         with:
           version: ${{ env.EMSCRIPTEN_VERSION }}
+      - name: Add the notices
+        run: cp NOTICE LICENSE-THIRD-PARTY.md python/
       - name: Build the wheel
         working-directory: python
         # pyodide-build's default flags are for its pinned nightly toolchain (-Z flags); stable
@@ -91,6 +110,8 @@ jobs:
         env:
           CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUSTFLAGS: "-C link-arg=-sSIDE_MODULE=2"
         run: pyodide build -o dist
+      - name: Check that the wheel carries the license files
+        run: python .github/scripts/check-license-files.py python/dist/*.whl
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -148,7 +169,7 @@ jobs:
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "terrio-cli") | .version')
           name="terrio-cli-v$version-${{ matrix.platform.target }}"
           mkdir -p "dist/$name"
-          cp LICENSE README.md "dist/$name/"
+          cp LICENSE NOTICE LICENSE-THIRD-PARTY.md README.md "dist/$name/"
           cd dist
           if [ "$RUNNER_OS" = Windows ]; then
             cp "../target/${{ matrix.platform.target }}/release/terrio.exe" "$name/"
