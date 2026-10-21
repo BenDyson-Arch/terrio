@@ -139,9 +139,28 @@ impl SpatialRef {
         if let Some(proj4) = proj4_extension(wkt)
             && let Ok(own) = Def::from_proj(&proj4)
         {
-            // Its EPSG code: declared, or one whose definition converts as the PROJ string does.
-            let epsg = declared_epsg(wkt).or_else(|| identify_epsg(wkt).filter(|code| is_registered_as(&own, *code)));
-            return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
+            // Its EPSG (or ESRI) code, declared or identified, when its definition converts as
+            // the PROJ string does, on its ellipsoid and datum: the extension wins over a code
+            // that does not, as over the nodes. A PROJ string without datum shift is on WGS 84
+            // for a code on WGS 84 itself (EPSG:3857's own WKT gives its datum as a null grid).
+            // A declared code terrio does not know converts as nothing, and is dropped.
+            let fits = |code: SpatialRef| {
+                Def::new(&code).is_ok_and(|r| {
+                    let unshifted = own.ops().is_empty() && own.datum_code().is_none() && r.is_wgs84();
+                    let ellipsoid = (own.ell.a - r.ell.a).abs() < 1e-3 && (own.ell.es - r.ell.es).abs() < 1e-9;
+                    own.same_conversion(&r) && ellipsoid && (unshifted || own.same_datum(&r))
+                })
+            };
+            let epsg = declared_epsg(wkt)
+                .or_else(|| identify_epsg(wkt))
+                .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
+            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
+            if let Some(code) = s.esri
+                && !fits(SpatialRef { esri: Some(code), ..Default::default() })
+            {
+                s.esri = None;
+            }
+            return s;
         }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
@@ -463,11 +482,6 @@ fn proj_to_wkt(p: &str) -> Option<String> {
     let datum: Vec<&str> = p.split_whitespace().filter(|t| DATUM.iter().any(|d| t.starts_with(d))).collect();
     let geogcs = wbp::crs_to_wkt(&wbp::from_proj_string(&format!("+proj=longlat {}", datum.join(" "))).ok()?);
     Some(format!("PROJCS[\"unknown\",{geogcs},PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],{extension}]"))
-}
-
-/// Whether the EPSG CRS `code` is the CRS of `own`: the same conversion on the same datum.
-fn is_registered_as(own: &Def, code: u32) -> bool {
-    Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_ok_and(|r| own.same_conversion(&r) && own.same_datum(&r))
 }
 
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
@@ -1031,6 +1045,42 @@ mod tests {
             let (wx, wy) = Transformer::new(&wgs84, &from_wkt).unwrap().transform(25.0, -50.0).unwrap();
             assert!((x - wx).abs() < 1e-3 && (y - wy).abs() < 1e-3, "{p}: ({x}, {y}) vs ({wx}, {wy})");
         }
+    }
+
+    #[test]
+    fn proj4_extension_describes_the_whole_crs() {
+        // GDAL and PROJ read a WKT 1 with a PROJ4 extension as that PROJ string, whatever its
+        // nodes say: here a central meridian of 10, not -75.
+        let wkt = r#"PROJCS["unknown",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-75],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=tmerc +lon_0=10 +datum=WGS84 +units=m +no_defs"]]"#;
+        let own = Def::from_proj("+proj=tmerc +lon_0=10 +datum=WGS84 +units=m +no_defs").unwrap();
+        let bare = SpatialRef { wkt: Some(wkt.into()), ..Default::default() };
+        for d in [Def::new(&SpatialRef::from_wkt(wkt)).unwrap(), Def::new(&bare).unwrap(), Def::wkt_conversion(wkt).unwrap()] {
+            assert!(d.same_conversion(&own));
+        }
+        // Over a declared code it does not convert as (UTM zone 18N's central meridian is -75).
+        let declared = format!("{},AUTHORITY[\"EPSG\",\"32618\"]]", &wkt[..wkt.len() - 1]);
+        let s = SpatialRef::from_wkt(&declared);
+        assert_eq!(s.epsg, None);
+        assert!(Def::new(&s).unwrap().same_conversion(&own));
+        // A declared code it converts as is kept.
+        let utm = r#"PROJCS["WGS 84 / UTM zone 18N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",-75],UNIT["metre",1],EXTENSION["PROJ4","+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs"],AUTHORITY["EPSG","32618"]]"#;
+        assert_eq!(SpatialRef::from_wkt(utm).epsg, Some(32618));
+        // EPSG:3857's WKT, whose extension gives the datum as a null grid.
+        assert_eq!(SpatialRef::from_wkt(epsg_wkt(3857).unwrap()).epsg, Some(3857));
+        // Nor one on another ellipsoid.
+        assert_eq!(SpatialRef::from_wkt(&utm.replace("+datum=WGS84", "+ellps=intl")).epsg, None);
+        let geog = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","+proj=longlat +ellps=intl +no_defs"],AUTHORITY["EPSG","4326"]]"#;
+        assert_eq!(SpatialRef::from_wkt(geog).epsg, None);
+        // Nor a declared ESRI code it does not convert as.
+        let moll = SpatialRef::from_esri(54009).unwrap().to_wkt().unwrap();
+        let i = moll.rfind(",AUTHORITY[").unwrap();
+        let other = format!("{},EXTENSION[\"PROJ4\",\"+proj=moll +lon_0=10 +datum=WGS84 +units=m\"]{}", &moll[..i], &moll[i..]);
+        assert_eq!(SpatialRef::from_wkt(&other).authority(), None);
+        let same = other.replace("+lon_0=10", "+lon_0=0");
+        assert_eq!(SpatialRef::from_wkt(&same).authority(), Some(("ESRI", 54009)));
+        // Not a declared code on another datum than the extension's (ED50, which shifts).
+        let ed50 = utm.replace("+zone=18 +datum=WGS84", "+zone=32 +ellps=intl").replace("-75", "9").replace("32618", "23032");
+        assert_eq!(SpatialRef::from_wkt(&ed50).epsg, None);
     }
 
     #[test]
