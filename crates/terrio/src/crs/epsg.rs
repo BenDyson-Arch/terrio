@@ -203,6 +203,8 @@ impl Table {
                     unknown_area: flags.contains('u'),
                     ballpark: flags.contains('b'),
                     concatenated: flags.contains('c'),
+                    between_3d: flags.contains('h'),
+                    geocentric: flags.contains('g'),
                     priority: flags.contains('p'),
                     keeps_height: flags.contains('z'),
                     steps,
