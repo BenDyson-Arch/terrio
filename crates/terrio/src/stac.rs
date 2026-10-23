@@ -50,7 +50,7 @@ fn is_url(s: &str) -> bool {
 }
 
 /// A location's bytes: a local file, a URL or object storage, or a zip archive member.
-fn fetch(loc: &str) -> Result<Vec<u8>> {
+pub(crate) fn fetch(loc: &str) -> Result<Vec<u8>> {
     use crate::vfs::Location;
     match Location::parse(loc) {
         Location::Local(p) => Ok(std::fs::read(p)?),
@@ -1062,6 +1062,8 @@ fn may_be_stac(path: &str) -> bool {
 /// for local files). A remote JSON document that is not STAC is opened as GeoJSON.
 enum Probe {
     Stac(Value),
+    /// An item with tiled assets (see [`crate::stacta`]).
+    Stacta(Box<crate::stacta::Item>),
     Other(Box<Dataset>),
 }
 
@@ -1085,6 +1087,9 @@ fn probe(path: &str) -> Option<Result<Probe>> {
         Err(e) => return Some(Err(e)),
     };
     match serde_json::from_slice::<Value>(&bytes) {
+        Ok(v) if crate::stacta::is_stacta(&v) && kind(&v) == Some(Kind::Item) => {
+            crate::stacta::Item::parse(&bytes, path).map(|item| Ok(Probe::Stacta(Box::new(item))))
+        }
         Ok(v) if kind(&v).is_some() => Some(Ok(Probe::Stac(v))),
         _ if loc.is_local() => None,
         _ => Some(crate::memory::open_bytes(bytes, &loc.file_name()).map(|ds| Probe::Other(Box::new(ds)))),
@@ -1102,6 +1107,9 @@ fn footprint_dataset(doc: Value, path: &str, max_items: usize) -> Result<(Vector
 
 /// Opens a STAC dataset name or document. `None` when `path` is neither.
 pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
+    if let Some(r) = crate::stacta::open_named_or_local(path) {
+        return Some(r.and_then(|mut r| r.read()).map(Dataset::Raster));
+    }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => return Some(asset_href(&item, &asset).and_then(|href| crate::open(&href))),
         Some(Name::Mosaic { .. }) => return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster)),
@@ -1109,6 +1117,7 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
     }
     Some(match probe(path)? {
         Ok(Probe::Stac(doc)) => footprint_dataset(doc, path, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v)),
+        Ok(Probe::Stacta(item)) => crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster),
         Ok(Probe::Other(ds)) => Ok(*ds),
         Err(e) => Err(e),
     })
@@ -1121,6 +1130,9 @@ fn search_request(source: &str, filters: &Filters) -> Request {
 
 /// Opens a `STAC:` asset or `STACIT:` mosaic lazily. `None` when `path` is neither.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
+    if let Some(r) = crate::stacta::open_lazy(path) {
+        return Some(r);
+    }
     Some(match parse_name(path)? {
         Name::Asset { item, asset } => asset_href(&item, &asset).and_then(|href| LazyRaster::open(&href)),
         Name::Mosaic { source, filters } => (|| {
@@ -1144,6 +1156,9 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
 /// Summarizes a STAC dataset: the footprints of a document with its assets (an item's) or
 /// mosaics (a collection's) as subdatasets, an asset, or a mosaic. `None` when `path` is not one.
 pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
+    if let Some(r) = crate::stacta::info(path, options) {
+        return Some(r);
+    }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => {
             return Some(asset_href(&item, &asset).and_then(|href| crate::info::info_path(&href, options)));
@@ -1179,6 +1194,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
     }
     let doc = match probe(path)? {
         Ok(Probe::Stac(doc)) => doc,
+        Ok(Probe::Stacta(item)) => return Some(crate::stacta::info_item(*item, None, None, options)),
         Ok(Probe::Other(ds)) => return Some(Ok(crate::info::info(&ds, options))),
         Err(e) => return Some(Err(e)),
     };
