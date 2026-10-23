@@ -136,10 +136,13 @@ struct Client {
     remote: Remote,
     /// The URL requests go to (after S3 region discovery or a redirect).
     url: String,
+    /// A query added to an S3 object's URL (`?list-type=2&...` for a listing), or empty.
+    query: String,
     s3: Option<S3Auth>,
     /// Whether a missing object (status 404, or 403 as anonymous S3 requests get for missing
     /// keys) is an answer rather than an error.
     missing_ok: bool,
+    refused_ok: bool,
 }
 
 struct S3Auth {
@@ -170,7 +173,7 @@ impl Client {
                 (o.url(region.as_deref()), Some(S3Auth { creds, region, discovered: false }))
             }
         };
-        Self { agent, options, remote: remote.clone(), url, s3, missing_ok: false }
+        Self { agent, options, remote: remote.clone(), url, query: String::new(), s3, missing_ok: false, refused_ok: false }
     }
 
     /// Sends a `GET` (of the inclusive byte range `range`, if any) and returns the response once it
@@ -181,7 +184,7 @@ impl Client {
 
     /// Sends a `GET` with a `Range` header value (`bytes=0-99`, `bytes=-16`), if any. With
     /// `missing_ok`, a missing object's response (404, or 403 to an unsigned request) is returned
-    /// too.
+    /// too; with `refused_ok`, any 403.
     fn send_range(&mut self, range_header: Option<String>) -> Result<ureq::http::Response<ureq::Body>> {
         let started = Instant::now();
         let mut url = self.url.clone();
@@ -240,7 +243,7 @@ impl Client {
             {
                 auth.discovered = true;
                 auth.region = Some(region);
-                self.url = object.url(auth.region.as_deref());
+                self.url = format!("{}{}", object.url(auth.region.as_deref()), self.query);
                 url = self.url.clone();
                 continue;
             }
@@ -260,6 +263,8 @@ impl Client {
                 // S3 (and GCS) answer anonymous requests for missing keys with 403; a signed
                 // request's 403 is a denied one (expired or insufficient credentials).
                 403 if self.missing_ok && !signed => return Ok(response),
+                // A refused signed request, returned to a caller that handles it.
+                403 if self.refused_ok => return Ok(response),
                 429 | 500 | 502 | 503 | 504 if attempt < self.options.max_retry => self.backoff(&mut attempt),
                 _ => {
                     let hint = match (&self.s3, status) {
@@ -453,6 +458,191 @@ pub(crate) fn download(remote: &Remote, path: &std::path::Path) -> Result<()> {
 pub(crate) fn get(remote: &Remote) -> Result<Vec<u8>> {
     let mut client = Client::new(remote, HttpOptions::from_env());
     Ok(client.fetch(None)?.data)
+}
+
+/// A "directory" of an object store: the objects below a prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Directory {
+    /// A prefix of an S3 bucket (`a/b`, without a trailing slash; empty for the bucket's root),
+    /// listed with signed requests when credentials are set.
+    S3 { bucket: String, prefix: String },
+    /// An HTTP(S) URL of a directory in a store that lists objects: Amazon S3
+    /// (`bucket.s3.amazonaws.com`), Google Cloud Storage (`storage.googleapis.com/bucket`) or
+    /// Azure Blob Storage (`account.blob.core.windows.net/container`, with a SAS token in its
+    /// query).
+    Url(String),
+}
+
+/// The names of the "subdirectories" of a directory of an object store (the common prefixes of
+/// its keys, one level down), as GDAL's `VSIReadDir` lists them on `/vsis3/`, `/vsigs/` and
+/// `/vsiaz/`. `None` when the store cannot list (a plain HTTP server), or refuses to (a bucket
+/// whose listing is not public).
+pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>> {
+    let enc = |s: &str| s3::uri_encode(s, true);
+    let with_slash = |p: &str| if p.is_empty() { String::new() } else { format!("{}/", p.trim_end_matches('/')) };
+    // The listing requests (one per page) and how to read a page.
+    enum Api {
+        S3 { remote: Remote, prefix: String },
+        Url { base: String, prefix: String },
+        Azure { base: String, prefix: String, sas: String },
+    }
+    let api = match dir {
+        Directory::S3 { bucket, prefix } => {
+            Api::S3 { remote: Remote::S3(S3Object { bucket: bucket.clone(), key: String::new() }), prefix: with_slash(prefix) }
+        }
+        Directory::Url(url) => {
+            let (path, query) = url.split_once('?').unwrap_or((url, ""));
+            let Some((scheme, rest)) = path.split_once("://") else { return Ok(None) };
+            let (host, key) = rest.split_once('/').unwrap_or((rest, ""));
+            let lower = host.to_ascii_lowercase();
+            if lower == "storage.googleapis.com" {
+                let (bucket, prefix) = key.split_once('/').unwrap_or((key, ""));
+                Api::Url { base: format!("{scheme}://{host}/{bucket}"), prefix: with_slash(prefix) }
+            } else if lower.ends_with(".blob.core.windows.net") {
+                let (container, prefix) = key.split_once('/').unwrap_or((key, ""));
+                Api::Azure { base: format!("{scheme}://{host}/{container}"), prefix: with_slash(prefix), sas: query.to_string() }
+            } else if lower.ends_with(".amazonaws.com") && (lower.contains(".s3") || lower.starts_with("s3.") || lower.starts_with("s3-")) {
+                // Virtual-hosted S3 URLs; path-style ones (`s3.amazonaws.com/bucket/...`) too.
+                if lower.starts_with("s3.") || lower.starts_with("s3-") {
+                    let (bucket, prefix) = key.split_once('/').unwrap_or((key, ""));
+                    Api::Url { base: format!("{scheme}://{host}/{bucket}"), prefix: with_slash(prefix) }
+                } else {
+                    Api::Url { base: format!("{scheme}://{host}"), prefix: with_slash(key) }
+                }
+            } else {
+                return Ok(None);
+            }
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut token: Option<String> = None;
+    const MAX_PAGES: usize = 1000;
+    for page in 0..MAX_PAGES {
+        let (body, prefix) = match &api {
+            Api::S3 { remote, prefix } => {
+                let mut client = Client::new(remote, HttpOptions::from_env());
+                client.missing_ok = true;
+                client.refused_ok = true;
+                client.query = format!("?{}", s3_list_query(prefix, token.as_deref()));
+                client.url = format!("{}{}", client.url, client.query);
+                let fetched = client.fetch(None)?;
+                // A signed request refused: the credentials may not allow s3:ListBucket. Not
+                // listable, rather than failing again.
+                if fetched.status == 403 && client.s3.as_ref().is_some_and(|a| a.creds.is_some()) {
+                    crate::warnings::warn(format!(
+                        "S3: listing s3://{}/{prefix} was refused (403): the credentials may not allow s3:ListBucket",
+                        remote_bucket(remote)
+                    ));
+                }
+                if matches!(fetched.status, 403 | 404) {
+                    return Ok(None);
+                }
+                (fetched.data, prefix)
+            }
+            Api::Url { base, prefix } => match list_get(&format!("{base}/?{}", s3_list_query(prefix, token.as_deref())))? {
+                Some(b) => (b, prefix),
+                None => return Ok(None),
+            },
+            Api::Azure { base, prefix, sas } => {
+                let mut q = vec![
+                    "restype=container".to_string(),
+                    "comp=list".to_string(),
+                    format!("prefix={}", enc(prefix)),
+                    format!("delimiter={}", enc("/")),
+                ];
+                if let Some(t) = &token {
+                    q.push(format!("marker={}", enc(t)));
+                }
+                if !sas.is_empty() {
+                    q.push(sas.clone());
+                }
+                match list_get(&format!("{base}?{}", q.join("&")))? {
+                    Some(b) => (b, prefix),
+                    None => return Ok(None),
+                }
+            }
+        };
+        let xml = String::from_utf8_lossy(&body);
+        let azure = matches!(api, Api::Azure { .. });
+        let (group, name) = if azure { ("BlobPrefix", "Name") } else { ("CommonPrefixes", "Prefix") };
+        for block in xml_elements(&xml, group) {
+            if let Some(p) = xml_elements(block, name).first()
+                && let Some(child) = xml_unescape(p).strip_prefix(prefix.as_str())
+            {
+                let child = child.trim_end_matches('/');
+                if !child.is_empty() && !out.iter().any(|o| o == child) {
+                    out.push(child.to_string());
+                }
+            }
+        }
+        let next = if azure {
+            xml_elements(&xml, "NextMarker").first().map(|t| xml_unescape(t))
+        } else if xml_elements(&xml, "IsTruncated").first().is_some_and(|t| t.trim() == "true") {
+            xml_elements(&xml, "NextContinuationToken").first().map(|t| xml_unescape(t))
+        } else {
+            None
+        };
+        match next.filter(|t| !t.is_empty()) {
+            Some(_) if page + 1 == MAX_PAGES => {
+                crate::warnings::warn(format!("listing stopped after {MAX_PAGES} pages ({} names)", out.len()));
+            }
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    out.sort();
+    Ok(Some(out))
+}
+
+/// The query of an S3 `ListObjectsV2` request (Google Cloud Storage's XML API takes it too): the
+/// keys below `prefix` grouped by `/`, from a continuation token. Its parameters are in sorted
+/// order, as SigV4's canonical query has them.
+fn s3_list_query(prefix: &str, token: Option<&str>) -> String {
+    let enc = |s: &str| s3::uri_encode(s, true);
+    let mut q: Vec<String> = token.map(|t| format!("continuation-token={}", enc(t))).into_iter().collect();
+    q.extend([format!("delimiter={}", enc("/")), "list-type=2".to_string(), format!("prefix={}", enc(prefix))]);
+    q.join("&")
+}
+
+/// The bucket of an S3 object, for messages.
+fn remote_bucket(remote: &Remote) -> &str {
+    match remote {
+        Remote::S3(o) => &o.bucket,
+        Remote::Url(u) => u,
+    }
+}
+
+/// A listing page of an unsigned store: `None` when listing is refused or missing (403, 404), or
+/// the server answers with something other than XML.
+fn list_get(url: &str) -> Result<Option<Vec<u8>>> {
+    let mut client = Client::new(&Remote::Url(url.to_string()), HttpOptions::from_env());
+    client.missing_ok = true;
+    let fetched = client.fetch(None)?;
+    // Azure starts its XML with a byte order mark.
+    let data = fetched.data.strip_prefix(b"\xEF\xBB\xBF").map(<[u8]>::to_vec).unwrap_or(fetched.data);
+    if matches!(fetched.status, 403 | 404) || !data.trim_ascii_start().starts_with(b"<") {
+        return Ok(None);
+    }
+    Ok(Some(data))
+}
+
+/// The contents of the elements named `name` in an XML document (no nesting of the same name).
+fn xml_elements<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
+    let (open, close) = (format!("<{name}>"), format!("</{name}>"));
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(i) = rest.find(&open) {
+        let after = &rest[i + open.len()..];
+        let Some(j) = after.find(&close) else { break };
+        out.push(&after[..j]);
+        rest = &after[j + close.len()..];
+    }
+    out
+}
+
+/// XML text with its predefined entities replaced.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
 /// Sends a `POST` of a JSON body (a STAC API search, for instance) and returns the response's
@@ -810,6 +1000,53 @@ mod tests {
         assert_eq!(retry_after_seconds("soon"), None);
     }
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn reads_listing_xml() {
+        let xml = "<ListBucketResult><IsTruncated>true</IsTruncated><CommonPrefixes><Prefix>a/b&amp;c/</Prefix></CommonPrefixes>\
+                   <CommonPrefixes><Prefix>a/d/</Prefix></CommonPrefixes><NextContinuationToken>t1</NextContinuationToken></ListBucketResult>";
+        let prefixes: Vec<String> =
+            xml_elements(xml, "CommonPrefixes").iter().flat_map(|b| xml_elements(b, "Prefix")).map(xml_unescape).collect();
+        assert_eq!(prefixes, ["a/b&c/", "a/d/"]);
+        assert_eq!(xml_elements(xml, "NextContinuationToken"), ["t1"]);
+        assert!(xml_elements("<a>", "a").is_empty());
+    }
+
+    /// Lists real public directories of Amazon S3, Google Cloud Storage and Azure Blob Storage
+    /// (with a Planetary Computer SAS token): `cargo test -p terrio --lib lists_object_stores -- --ignored`.
+    #[test]
+    #[ignore = "network"]
+    fn lists_object_stores() {
+        let s3 = list_subdirectories(&Directory::S3 {
+            bucket: "hrrrzarr".into(),
+            prefix: "sfc/20240101/20240101_00z_anl.zarr/2m_above_ground".into(),
+        })
+        .expect("S3 listing")
+        .expect("listable");
+        assert!(s3.contains(&"TMP".to_string()), "{s3:?}");
+        let url = "https://hrrrzarr.s3.amazonaws.com/sfc/20240101/20240101_00z_anl.zarr/2m_above_ground";
+        assert_eq!(list_subdirectories(&Directory::Url(url.into())).expect("S3 URL listing"), Some(s3.clone()));
+        // Path-style S3 URLs.
+        let path_style = "https://s3.us-west-1.amazonaws.com/hrrrzarr/sfc/20240101/20240101_00z_anl.zarr/2m_above_ground";
+        assert_eq!(list_subdirectories(&Directory::Url(path_style.into())).expect("path-style listing"), Some(s3));
+        let gcs = list_subdirectories(&Directory::Url(
+            "https://storage.googleapis.com/cmip6/CMIP6/CMIP/NCAR/CESM2/historical/r1i1p1f1/Amon/ta/gn/v20190308".into(),
+        ))
+        .expect("GCS listing")
+        .expect("listable");
+        assert!(gcs.contains(&"ta".to_string()) && gcs.contains(&"lat_bnds".to_string()), "{gcs:?}");
+        let token: serde_json::Value = serde_json::from_slice(
+            &get(&Remote::Url("https://planetarycomputer.microsoft.com/api/sas/v1/token/daymeteuwest/daymet-zarr".into())).expect("token"),
+        )
+        .expect("JSON");
+        let sas = token["token"].as_str().expect("a token");
+        let az = list_subdirectories(&Directory::Url(format!("https://daymeteuwest.blob.core.windows.net/daymet-zarr/daily?{sas}")))
+            .expect("Azure listing")
+            .expect("listable");
+        assert!(az.iter().any(|d| d.ends_with(".zarr")), "{az:?}");
+        // A plain HTTP server does not list.
+        assert_eq!(list_subdirectories(&Directory::Url("https://example.com/a.zarr".into())).expect("no listing"), None);
+    }
     use std::net::TcpListener;
 
     #[derive(Clone, Copy)]

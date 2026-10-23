@@ -268,7 +268,8 @@ fn subdatasets_from_metadata(metadata: &[(String, String)]) -> Vec<Subdataset> {
     let mut out: Vec<Subdataset> = Vec::new();
     for (k, v) in metadata {
         let Some((n, is_name)) = subdataset_index(k) else { continue };
-        if n == 0 {
+        // Indices from a file's metadata: within reason.
+        if n == 0 || n > 100_000 {
             continue;
         }
         while out.len() < n {
@@ -363,8 +364,8 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
         extent,
         bands,
         overviews,
-        metadata: r.metadata().into_iter().filter(|(k, _)| !k.starts_with(INTERNAL)).collect(),
-        subdatasets: Vec::new(),
+        metadata: r.metadata().into_iter().filter(|(k, _)| subdataset_index(k).is_none() && !k.starts_with(INTERNAL)).collect(),
+        subdatasets: subdatasets_from_metadata(&r.metadata()),
         geolocation: Vec::new(),
     })
 }
