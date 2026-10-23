@@ -237,6 +237,11 @@ pub fn polygonize(ds: &RasterDataset, options: &PolygonizeOptions) -> Result<Lay
                 if let Some(first) = coords.first().cloned() {
                     coords.push(first);
                 }
+                // A positive affine determinant reverses the winding expected below. Normalize
+                // before classifying rings; otherwise a south-up exterior is mistaken for a hole.
+                if gt[1] * gt[5] - gt[2] * gt[4] > 0.0 {
+                    coords.reverse();
+                }
                 rings[label as usize].push(coords);
             }
         }
@@ -310,7 +315,8 @@ fn split_at_repeats(ring: Vec<(usize, usize)>) -> Vec<Vec<(usize, usize)>> {
 
 /// Twice the signed area of a closed ring: positive when counter-clockwise.
 fn signed_area(r: &[Coord]) -> f64 {
-    r.windows(2).map(|w| w[0].x * w[1].y - w[1].x * w[0].y).sum()
+    let Some(origin) = r.first() else { return 0.0 };
+    r.windows(2).map(|w| (w[0].x - origin.x) * (w[1].y - origin.y) - (w[1].x - origin.x) * (w[0].y - origin.y)).sum()
 }
 
 #[cfg(test)]
@@ -365,6 +371,21 @@ mod tests {
 
         let o = PolygonizeOptions { ignore_nodata: true, ..Default::default() };
         assert_eq!(polygonize(&ds, &o).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn south_up_and_large_origin_grids_keep_exteriors_and_holes() {
+        let data = [1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        for gt in [[100.0, 10.0, 0.0, 200.0, 0.0, 10.0], [100.0, 10.0, 2.0, 200.0, 1.0, 10.0], [1e9, 1.0, 0.0, 1e9, 0.0, -1.0]] {
+            let mut ds = raster(3, 3, &data, Some(0.0));
+            ds.set_geo_transform(gt);
+            let out = polygonize(&ds, &Default::default()).unwrap();
+            let pixel_area = (gt[1] * gt[5] - gt[2] * gt[4]).abs();
+            assert_eq!(polygons(&out), vec![(1, 8.0 * pixel_area, 1)], "{gt:?}");
+            let Some(Geometry::Polygon { exterior, interiors }) = &out.features[0].geometry else { panic!() };
+            assert!(signed_area(&exterior.0) > 0.0);
+            assert!(signed_area(&interiors[0].0) < 0.0);
+        }
     }
 
     #[test]
