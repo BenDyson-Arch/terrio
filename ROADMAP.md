@@ -284,9 +284,10 @@ WebAssembly (the `terrio-js` npm package):
       `PROJ_NETWORK=ON` (or downloaded whole with `TERRIO_GRID_DOWNLOAD=YES`); transformations
       between vertical CRSs as PROJ lists them (offsets, offsets and slopes, VERTCON and other
       grids, chained through an intermediate vertical CRS, depths included), PROJ's heights on
-      727 of 732 points over 604 pairs (`scripts/compare_vertical_with_proj.py`).
+      727 of 732 points over 604 pairs (`scripts/compare_vertical_with_proj.py`); point motion
+      operations between two epochs of a datum (the Canada velocity grids of NAD83(CSRS),
+      NKG_RF17vel), PROJ's coordinates to 4 nm.
     - [ ] PROJ's chains through several intermediate datums.
-    - [ ] Moving coordinates between epochs (point motion operations).
 - [x] NetCDF and HDF5 in pure Rust. Done: classic and netCDF-4 reading, with variables in groups
       below the root (`NETCDF:"file.nc":/group/var`) listed as `gdalinfo` lists them; classic
       (CDF-1/2/5) and netCDF-4 writing (`FORMAT=NC4`/`NC4C`, chunked, deflate and shuffle, CF
