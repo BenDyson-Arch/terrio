@@ -213,7 +213,12 @@ Python:
       written (`GDAL_TIFF_INTERNAL_MASK=NO`, formats without internal masks, kept on `r+`), the
       same files as rasterio's on Copernicus DEM tiles.
     - [ ] RPC transformers.
-    - [ ] A `rio` command line.
+    - [x] A `rio` command line. Done: `terrio-rio` (and `python -m terrio.rio`), rasterio's
+          `rio` commands (`info`, `bounds`, `blocks`, `shapes`, `clip`, `convert`, `merge`,
+          `overview`, `warp`, `sample`, `transform`, `mask`, `rasterize`, `stack`, `edit-info`,
+          `env`, `gcps`, `calc` with its snuggs expressions, `create`, `rm`, `insp`) with their
+          options, defaults and outputs, run with `terrio.rio` and compared with rasterio's `rio`
+          on synthetic rasters and on Copernicus DEM and Sentinel-2 COGs.
 - [x] xarray integration like rioxarray: a `terrio` backend engine with lazy windowed reads (remote
       COGs read tile by tile, dask chunks), and an accessor with rioxarray's methods (`reproject`,
       `reproject_match`, `clip`, `clip_box`, `pad_box`, `to_raster`, `merge_arrays`). Done:
