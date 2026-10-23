@@ -268,9 +268,11 @@ WebAssembly (the `terrio-js` npm package):
       every EPSG CRS's reference points (`scripts/compare_crs_grids_with_gdal.py`,
       `epsg_accuracy_grids`); CDN grids read in place by range requests, as PROJ reads them (four
       EGM2008 heights fetch 0.85 MB of 80 MB), identical to PROJ's values and to `gdalwarp` with
-      `PROJ_NETWORK=ON` (or downloaded whole with `TERRIO_GRID_DOWNLOAD=YES`).
+      `PROJ_NETWORK=ON` (or downloaded whole with `TERRIO_GRID_DOWNLOAD=YES`); transformations
+      between vertical CRSs as PROJ lists them (offsets, offsets and slopes, VERTCON and other
+      grids, chained through an intermediate vertical CRS, depths included), PROJ's heights on
+      727 of 732 points over 604 pairs (`scripts/compare_vertical_with_proj.py`).
     - [ ] PROJ's chains through several intermediate datums.
-    - [ ] Vertical-to-vertical transformations (VERTCON, offsets).
     - [ ] Moving coordinates between epochs (point motion operations).
 - [x] NetCDF and HDF5 in pure Rust. Done: classic and netCDF-4 reading, with variables in groups
       below the root (`NETCDF:"file.nc":/group/var`) listed as `gdalinfo` lists them; classic
