@@ -115,7 +115,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      # The threaded module (js/build.mjs): the nightly it pins, with the standard library's sources.
+      # The threaded and memory64 modules (js/build.mjs): the nightly it pins, with the standard
+      # library's sources.
       # Installed first: the last toolchain installed is the default (stable).
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -134,6 +135,8 @@ jobs:
           registry-url: https://registry.npmjs.org
       # Trusted publishing needs npm 11.5.1 or later.
       - run: npm install -g npm@latest
+      # The memory64 module's C code (Zstandard) needs clang 20 or later (js/build.mjs).
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-20
       - name: Build the package (browsers, bundlers, and Node.js through init)
         run: |
           node js/build.mjs

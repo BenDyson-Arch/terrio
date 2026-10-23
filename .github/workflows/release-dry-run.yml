@@ -49,7 +49,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The threaded module (js/build.mjs): the nightly it pins, with the standard library's sources.
+      # The threaded and memory64 modules (js/build.mjs): the nightly it pins, with the standard
+      # library's sources.
       # Installed first: the last toolchain installed is the default (stable).
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -65,6 +66,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # The memory64 module's C code (Zstandard) needs clang 20 or later (js/build.mjs).
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-20
       - name: Build the package as the release does
         run: |
           node js/build.mjs
