@@ -217,6 +217,8 @@ def compare(a: Any, b: Any, c: Check) -> Outcome:
     """
     worst = Outcome("identical")
     notes: list[str] = []
+    # Differences beyond tolerance, listed before the tolerated ones in the detail.
+    failures: list[str] = []
 
     def walk(x: Any, y: Any, path: str) -> bool:
         nonlocal worst
@@ -229,33 +231,35 @@ def compare(a: Any, b: Any, c: Check) -> Outcome:
                 notes.append(f"{path}: {x!r} vs {y!r}")
                 worst = Outcome("tolerance")
                 return True
-            notes.append(f"{path}: {x!r} != {y!r}")
+            failures.append(f"{path}: {x!r} != {y!r}")
             return False
+        # Structures that differ still have their shared values compared, so every difference
+        # is listed.
         if isinstance(x, dict) and isinstance(y, dict):
-            if set(x) != set(y):
-                notes.append(f"{path}: keys {sorted(set(x) ^ set(y))}")
-                return False
-            return all(walk(x[k], y[k], f"{path}.{k}") for k in x)
+            same = set(x) == set(y)
+            if not same:
+                failures.append(f"{path}: keys {sorted(set(x) ^ set(y), key=str)}")
+            return all([walk(x[k], y[k], f"{path}.{k}") for k in x if k in y]) and same
         if isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
-            if len(x) != len(y):
-                notes.append(f"{path}: length {len(x)} != {len(y)}")
-                return False
-            return all(walk(p, q, f"{path}[{i}]") for i, (p, q) in enumerate(zip(x, y)))
+            same = len(x) == len(y)
+            if not same:
+                failures.append(f"{path}: length {len(x)} != {len(y)}")
+            return all([walk(p, q, f"{path}[{i}]") for i, (p, q) in enumerate(zip(x, y))]) and same
         if x != y:
-            notes.append(f"{path}: {str(x)[:120]} != {str(y)[:120]}")
+            failures.append(f"{path}: {str(x)[:120]} != {str(y)[:120]}")
             return False
         return True
 
     def arrays(x: Any, y: Any, path: str) -> bool:
         nonlocal worst
         if not (isinstance(x, np.ndarray) and isinstance(y, np.ndarray)):
-            notes.append(f"{path}: {type(x).__name__} vs {type(y).__name__}")
+            failures.append(f"{path}: {type(x).__name__} vs {type(y).__name__}")
             return False
         if np.ma.isMaskedArray(x) != np.ma.isMaskedArray(y):
-            notes.append(f"{path}: masked {np.ma.isMaskedArray(x)} vs {np.ma.isMaskedArray(y)}")
+            failures.append(f"{path}: masked {np.ma.isMaskedArray(x)} vs {np.ma.isMaskedArray(y)}")
             return False
         if x.shape != y.shape or x.dtype != y.dtype:
-            notes.append(f"{path}: {x.shape} {x.dtype} vs {y.shape} {y.dtype}")
+            failures.append(f"{path}: {x.shape} {x.dtype} vs {y.shape} {y.dtype}")
             return False
         if np.ma.isMaskedArray(x):
             if not np.array_equal(np.ma.getmaskarray(x), np.ma.getmaskarray(y)):
@@ -264,24 +268,25 @@ def compare(a: Any, b: Any, c: Check) -> Outcome:
                     notes.append(f"{path}: mask differs on {frac:.3%}")
                     worst = Outcome("tolerance")
                 else:
-                    notes.append(f"{path}: mask differs on {frac:.3%}")
+                    failures.append(f"{path}: mask differs on {frac:.3%}")
                     return False
             fx, fy = x.fill_value, y.fill_value
             both_nan = bool(np.all(np.isnan(fx)) and np.all(np.isnan(fy))) if np.asarray(fx).dtype.kind == "f" else False
             if not (fx == fy or both_nan):
-                notes.append(f"{path}: fill_value {fx} vs {fy}")
+                failures.append(f"{path}: fill_value {fx} vs {fy}")
                 return False
             x, y = np.ma.getdata(x), np.ma.getdata(y)
         if np.array_equal(x, y, equal_nan=x.dtype.kind in "fc"):
             return True
         if x.dtype.kind in "OUS":
-            notes.append(f"{path}: arrays differ")
+            failures.append(f"{path}: arrays differ")
             return False
         d = np.abs(x.astype(np.float64) - y.astype(np.float64))
         nan_mismatch = np.isnan(x.astype(np.float64)) != np.isnan(y.astype(np.float64))
         d[np.isnan(d) & ~nan_mismatch] = 0
         d[nan_mismatch] = np.inf
-        bad = d > (c.atol + c.rtol * np.abs(x.astype(np.float64)))
+        # A NaN on one side only is beyond any tolerance (NaN bounds compare false).
+        bad = (d > (c.atol + c.rtol * np.abs(x.astype(np.float64)))) | nan_mismatch
         frac = float(np.mean(d > 0))
         bad_frac = float(np.mean(bad))
         detail = f"{path}: {frac:.4%} of pixels differ, max {float(np.max(d)):.4g}"
@@ -289,12 +294,12 @@ def compare(a: Any, b: Any, c: Check) -> Outcome:
             notes.append(detail)
             worst = Outcome("tolerance")
             return True
-        notes.append(detail)
+        failures.append(detail)
         return False
 
     ok = walk(a, b, "")
     if not ok:
-        return Outcome("known" if c.expect == "known" else "different", "; ".join(notes)[:600])
+        return Outcome("known" if c.expect == "known" else "different", "; ".join(failures + notes)[:600])
     worst.detail = "; ".join(notes)[:600]
     return worst
 
@@ -1148,9 +1153,15 @@ def _rpc_points(rio: Any, ctx: Ctx, options: list[dict[str, Any]]) -> Any:
     return out
 
 
-@check("georeferencing", "RPCs: RPCTransformer forward (iterative) and inverse, with heights, RPC_HEIGHT(_SCALE), a DEM (bilinear, near, cubic, missing value, nodata holes); xy/rowcol(rpcs); dataset xy/index by TransformMethod.rpcs")
+@check("georeferencing", "RPCs: RPCTransformer forward (iterative) and inverse, with heights, RPC_HEIGHT(_SCALE), a DEM (bilinear, cubic, missing value, nodata holes); xy/rowcol(rpcs); dataset xy/index by TransformMethod.rpcs")
 def _g_rpc_transformer(rio: Any, ctx: Ctx) -> Any:
-    return _rpc_points(rio, ctx, _rpc_options(rpc_files(ctx)))
+    options = [o for o in _rpc_options(rpc_files(ctx)) if o.get("RPC_DEMINTERPOLATION") != "near"]
+    return _rpc_points(rio, ctx, options)
+
+
+@check("georeferencing", "RPCs: RPCTransformer with a DEM sampled by nearest neighbour (forward and inverse)")
+def _g_rpc_transformer_near(rio: Any, ctx: Ctx) -> Any:
+    return _rpc_points(rio, ctx, [o for o in _rpc_options(rpc_files(ctx)) if o.get("RPC_DEMINTERPOLATION") == "near"])
 
 
 @check("georeferencing", "RPCs: RPCTransformer with a DEM in UTM 11N (sampled through a coordinate transformation)", expect="tolerance", rtol=1e-12, atol=1e-9, reason="the DEM is sampled at positions projected by terrio's UTM, which differs from PROJ's in the last digits")

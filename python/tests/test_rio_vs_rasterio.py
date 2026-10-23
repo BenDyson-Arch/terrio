@@ -65,13 +65,33 @@ FMA_SENSITIVE = {
     "rasterize: --res, --dimensions, --bounds, --like, --property, --default-value, --fill, "
     "--all, --nodata, an existing output": 0.03,
 }
+# Fused multiply-adds also round GDAL's RPC polynomials differently, so the RPC transformer's
+# coordinates and pixel positions differ there in the last digits (at most 1.5e-11 pixels): the
+# relative and absolute tolerances each check gets on macOS arm64.
+FMA_ROUNDING = {
+    "RPCs: RPCTransformer forward (iterative) and inverse, with heights, RPC_HEIGHT(_SCALE), a DEM "
+    "(bilinear, cubic, missing value, nodata holes); xy/rowcol(rpcs); dataset xy/index by "
+    "TransformMethod.rpcs": (1e-12, 1e-9),
+}
+# With a DEM sampled by nearest neighbour, heights step from one DEM pixel to the next, and GDAL's
+# iterative inverse can stop on another iterate, or fail to converge, when its arithmetic rounds
+# differently: on macOS arm64, 61% of the points differed (NaN on one side only, or by 1e-6
+# degrees). Linux and Windows agree with terrio exactly, so the check is skipped there only.
+FMA_UNSTABLE = {
+    "RPCs: RPCTransformer with a DEM sampled by nearest neighbour (forward and inverse)",
+}
 MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 
 
 @pytest.mark.parametrize("check", compare.CHECKS, ids=_id)
 def test_check(check, scratch):
+    if MACOS_ARM and check.name in FMA_UNSTABLE:
+        pytest.skip("GDAL's iterative RPC inverse diverges under macOS arm64's FMA rounding")
     if MACOS_ARM and check.name in FMA_SENSITIVE:
         check = dataclasses.replace(check, expect="tolerance", max_frac=FMA_SENSITIVE[check.name])
+    if MACOS_ARM and check.name in FMA_ROUNDING:
+        rtol, atol = FMA_ROUNDING[check.name]
+        check = dataclasses.replace(check, expect="tolerance", rtol=rtol, atol=atol)
     data = _data()
     if check.needs_data and data is None:
         pytest.skip("TERRIO_TEST_DATA is not set")
