@@ -661,6 +661,11 @@ quadrant candidate is less than one pixel beyond the distance limit; Terrio foll
 that behavior. Complex bands are unsupported. Standard raster output
 options (`--format`, `--compress`, `--co`, etc.) apply.
 
+## Native multidimensional arrays
+
+See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
+lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
+
 ## catalog
 
 ```sh
