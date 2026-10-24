@@ -289,7 +289,25 @@ def main():
                 assert actual.GetSpatialRef().IsSame(reference.GetSpatialRef())
                 assert all(same_value(actual.GetRasterBand(band).GetNoDataValue(), reference.GetRasterBand(band).GetNoDataValue())
                     for band in range(1, reference.RasterCount + 1))
-                record.update(exact=1., within_tol=1., same_type=True, same_nodata=True, gt_diff_px=0.)
+                # Compare export masks at the common buffer type. A native Byte VRT
+                # band's nodata mask can round a valid fractional working value to zero,
+                # while both GDAL/Terrio Float64 exports retain that fraction as valid.
+                exported_path = tmp / "mixed-reference.tif"
+                exported = gdal.Translate(str(exported_path), reference, outputType=dtype)
+                exported = None
+                exported = gdal.Open(str(exported_path))
+                np.testing.assert_array_equal(exported.ReadAsArray(), expected)
+                expected_masks = np.stack([exported.GetRasterBand(band).GetMaskBand().ReadAsArray() != 0
+                    for band in range(1, reference.RasterCount + 1)])
+                observed_masks = np.stack([actual.GetRasterBand(band).GetMaskBand().ReadAsArray() != 0
+                    for band in range(1, actual.RasterCount + 1)])
+                np.testing.assert_array_equal(observed_masks, expected_masks)
+                record.update(compare(str(exported_path), str(actual_path), 0))
+                record.update(
+                    same_crs=bool(actual.GetSpatialRef().IsSame(exported.GetSpatialRef())),
+                    valid_gdal=int(np.count_nonzero(expected_masks)),
+                    valid_mismatch=int(np.count_nonzero(expected_masks != observed_masks)),
+                )
             except Exception as error:
                 record["error"] = str(error)
             records.append(record)
