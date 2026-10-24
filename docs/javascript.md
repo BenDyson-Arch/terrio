@@ -35,7 +35,7 @@ In WebAssembly, these formats are read from and written to memory:
 
 | | Read | Write |
 |---|---|---|
-| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
+| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
 | Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
@@ -56,14 +56,14 @@ archive of the `.jp2` file and the `.aux.xml` sidecar that holds the value, as G
 
 The package holds two WebAssembly modules with the same API. `terrio-js` has every format above;
 `terrio-js/core` leaves out the heaviest ones (GeoParquet and Arrow IPC, netCDF and HDF5, point
-clouds, JPEG 2000, Zarr, AVIF tiles and OpenStreetMap) and keeps GeoTIFF/COG with all its
+clouds, JPEG 2000, GRIB, Zarr, AVIF tiles and OpenStreetMap) and keeps GeoTIFF/COG with all its
 compressions, GeoJSON and the other text formats, FlatGeobuf, GeoPackage, Shapefile, PMTiles and
 MBTiles, the CRS transformations and the operations, at about half the size:
 
 | Module | `.wasm` | gzip | Brotli |
 |---|---|---|---|
-| `terrio-js` | 16.4 MB | 5.6 MB | 4.1 MB |
-| `terrio-js/core` | 8.9 MB | 3.0 MB | 2.3 MB |
+| `terrio-js` | 16.9 MB | 5.9 MB | 4.3 MB |
+| `terrio-js/core` | 9.2 MB | 3.2 MB | 2.4 MB |
 
 ```js
 import init, { open, features } from "terrio-js/core";
