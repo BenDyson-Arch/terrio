@@ -1187,8 +1187,13 @@ def _wp_rpc(rio: Any, ctx: Ctx) -> Any:
             if "RPC_DEM" not in opts:
                 crss.append("EPSG:3031")
             crss = crss if "RPC_DEM" not in opts else crss[:2]
-            for crs in crss:
-                out.append(W.calculate_default_transform("EPSG:4326", crs, 240, 200, rpcs=rpcs, **opts))
+            # The Windows GDAL bundled with rasterio 1.5.2 hangs in suggested output
+            # with an RPC DEM, even for WGS 84 and bilinear DEM interpolation. Keep
+            # comparing the actual DEM warps below; grid suggestions with a DEM
+            # are still compared on Linux and macOS.
+            if sys.platform != "win32" or "RPC_DEM" not in opts:
+                for crs in crss:
+                    out.append(W.calculate_default_transform("EPSG:4326", crs, 240, 200, rpcs=rpcs, **opts))
             for crs, r in (("EPSG:4326", "nearest"), ("EPSG:32611", "bilinear"), ("EPSG:4326", "cubic")):
                 dst, t = W.reproject(arr, rpcs=rpcs, src_crs="EPSG:4326", dst_crs=crs, resampling=rio.enums.Resampling[r], **opts)
                 out += [dst, t]
