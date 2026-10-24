@@ -193,6 +193,10 @@ transparent; tiles in other CRSs are reprojected into the index CRS. See
 ```javascript
 const sharp = terrio.pansharpen(pan, rgbnir, { bands: [1, 2, 3], bitdepth: 12, nodata: 0 });
 const rgb = terrio.pansharpen(pan, [red, green, blue], { weights: [0.6, 0.3, 0.1] });
+const sources = { "pan.tif": panBytes, "rgb.tif": spectralBytes };
+const xml = terrio.pansharpenVrt("pan.tif", ["rgb.tif"], sources, { bands: [1, 2, 3] });
+const virtual = terrio.openVrt(xml, sources);
+const window = virtual.readBand(1, [100, 200, 64, 64]);
 ```
 
 Inputs can be datasets or raster bytes. All spectral inputs contribute to intensity;

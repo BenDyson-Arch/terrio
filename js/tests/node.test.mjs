@@ -1229,6 +1229,32 @@ test("pansharpen weights, selected bands and unequal resolutions", () => {
 });
 
 
+
+test("pansharpenVrt creates a lazy uploaded-source virtual raster", () => {
+  const pan = terrio.rasterFromArray(new Uint16Array(64).fill(80), 8, 8, [0, 1, 0, 8, 0, -1], "EPSG:32611");
+  const spectral = terrio.rasterFromArray(new Uint16Array([...new Array(16).fill(20), ...new Array(16).fill(40)]), 4, 4, [0, 2, 0, 8, 0, -2], "EPSG:32611");
+  const sources = { "pan.tif": pan.toBytes("pan.tif"), "spectral.tif": spectral.toBytes("spectral.tif") };
+  const xml = terrio.pansharpenVrt("pan.tif", ["spectral.tif"], sources, { bands: [2, 1, 2] });
+  assert.match(xml, /VRTPansharpenedDataset/);
+  const sharp = terrio.openVrt(xml, sources);
+  assert.deepEqual([...sharp.readBand(1, [2, 3, 3, 2])], new Array(6).fill(107));
+  assert.equal(sharp.count, 3);
+  pan.free(); spectral.free(); sharp.free();
+});
+
+
+test("pansharpenVrt keeps direct source masks and ignores them in temporary upsampling", () => {
+  const pan = terrio.rasterFromArray(new Uint16Array(16).fill(80), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:32611");
+  // GDAL-generated 2x2 UInt16 bands filled with 20/40 and an all-zero internal TIFF mask.
+  const masked = new Uint8Array(Buffer.from("SUkqAAgAAAAQAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwACAAAAEAAQAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAAFgIAABUBAwABAAAAAgAAABYBAwABAAAAAgAAABcBBAABAAAAEAAAABwBAwABAAAAAQAAAFIBAwABAAAAAAAAAFMBAwACAAAAAQABAA6DDAADAAAAzgAAAIKEDAAGAAAA5gAAAK+HAwAgAAAAFgEAALGHAgAeAAAAVgEAAHQBAAAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBAAAAAAAAAAAABAAEAAAAHAAAEAAABAAEAAQQAAAEAAQACBLGHFgAAAAEIsYcHABYABggAAAEAjiMADAAAAQBjfwQMAAABACkjV0dTIDg0IC8gVVRNIHpvbmUgMTFOfFdHUyA4NHwADQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAACYCAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAFAAoABQAKAAUACgAFAAoAHicAQIA/f8AAAACAAE=", "base64"));
+  const sources = { "pan.tif": pan.toBytes("pan.tif"), "spectral.tif": masked };
+  const xml = terrio.pansharpenVrt("pan.tif", ["spectral.tif"], sources, {});
+  const out = terrio.openVrt(xml, sources);
+  assert.deepEqual([...out.readBand(1)], new Array(16).fill(53));
+  assert.deepEqual([...out.readBand(1, [1, 1, 2, 1])], [0, 0]);
+  pan.free(); out.free();
+});
+
 test("openCatalog: defers unused encoded sources and preserves supplied lazy datasets", () => {
   const index = { type: "FeatureCollection", features: [["left", 0], ["right", 2]].map(([location, x]) => ({
     type: "Feature", properties: { location }, geometry: { type: "Polygon", coordinates: [[[x, 0], [x + 4, 0], [x + 4, 4], [x, 4], [x, 0]]] },
