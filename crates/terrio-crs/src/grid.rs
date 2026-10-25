@@ -13,7 +13,10 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 
 const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
 const SEC_TO_RAD: f64 = DEG_TO_RAD / 3600.0;
@@ -105,7 +108,7 @@ type Block = (usize, Vec<f64>);
 enum GridReader {
     Bytes(Cursor<Arc<[u8]>>),
     #[cfg(remote)]
-    Remote(crate::http::RangeReader),
+    Remote(Box<dyn crate::network::GridStream>),
 }
 
 impl std::io::Read for GridReader {
@@ -746,10 +749,28 @@ fn registered() -> &'static Mutex<HashMap<String, Arc<[u8]>>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Files read, by name (`None` when not found or not readable).
-fn files() -> &'static Mutex<HashMap<String, Option<Arc<GridFile>>>> {
-    static F: OnceLock<Mutex<HashMap<String, Option<Arc<GridFile>>>>> = OnceLock::new();
+// Resets invalidate in-flight cache writes as well as entries already stored.
+static CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn cache_generation() -> u64 {
+    CACHE_GENERATION.load(Ordering::SeqCst)
+}
+
+/// Files read, by name (`None` when not found or not readable) and cache generation.
+type FileCache = Mutex<HashMap<String, (u64, Option<Arc<GridFile>>)>>;
+fn files() -> &'static FileCache {
+    static F: OnceLock<FileCache> = OnceLock::new();
     F.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A late lookup must not overwrite a result cached after a reset. Check while
+/// holding the cache lock so reset either invalidates this write or clears it.
+fn cache_file_result(name: &str, generation: u64, file: Option<Arc<GridFile>>) -> Option<()> {
+    let mut cache = files().lock().ok()?;
+    if generation == cache_generation() {
+        cache.insert(name.to_string(), (generation, file));
+    }
+    Some(())
 }
 
 /// Makes a grid file available under a name (such as `us_noaa_conus.tif`), from its bytes: for
@@ -917,7 +938,7 @@ fn download_whole() -> bool {
 #[cfg(remote)]
 fn open_remote(name: &str) -> Result<GridFile, bool> {
     let url = cdn_url(name).ok_or(true)?;
-    let reader = crate::http::RangeReader::open(&crate::http::Remote::Url(url)).map_err(|e| e.to_string().contains("status 404"))?;
+    let reader = crate::network::open(&url).map_err(|e| e.kind() == std::io::ErrorKind::NotFound)?;
     read_tiff(GridReader::Remote(reader)).ok_or(false)
 }
 
@@ -927,7 +948,7 @@ fn download(name: &str) -> Option<Arc<[u8]>> {
     let dir = cache_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     let tmp = dir.join(format!("{name}.part{}", std::process::id()));
-    if crate::http::download(&crate::http::Remote::Url(url), &tmp).is_err() {
+    if crate::network::download(&url, &tmp).is_err() {
         let _ = std::fs::remove_file(&tmp);
         return None;
     }
@@ -942,7 +963,8 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         static NULL: OnceLock<Arc<GridFile>> = OnceLock::new();
         return Some(NULL.get_or_init(|| Arc::new(null_file())).clone());
     }
-    if let Some(f) = files().lock().ok()?.get(name) {
+    let generation = cache_generation();
+    if let Some((_, f)) = files().lock().ok()?.get(name).filter(|(g, _)| *g == generation) {
         return f.clone();
     }
     let bytes = find_local(name);
@@ -950,7 +972,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         for old in old_names(name) {
             if let Some(b) = find_local(&old) {
                 let file = read_file(&old, b).map(Arc::new);
-                files().lock().ok()?.insert(name.to_string(), file.clone());
+                cache_file_result(name, generation, file.clone())?;
                 return file;
             }
         }
@@ -962,11 +984,11 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         match open_remote(name) {
             Ok(file) => {
                 let file = Arc::new(file);
-                files().lock().ok()?.insert(name.to_string(), Some(file.clone()));
+                cache_file_result(name, generation, Some(file.clone()))?;
                 return Some(file);
             }
             Err(true) => {
-                files().lock().ok()?.insert(name.to_string(), None);
+                cache_file_result(name, generation, None)?;
                 return None;
             }
             Err(false) => {}
@@ -975,12 +997,12 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     #[cfg(remote)]
     let bytes = if bytes.is_none() && network_enabled() { download(name) } else { bytes };
     let file = bytes.and_then(|b| read_file(name, b)).map(Arc::new);
-    files().lock().ok()?.insert(name.to_string(), file.clone());
+    cache_file_result(name, generation, file.clone())?;
     file
 }
 
-fn availability() -> &'static Mutex<HashMap<String, bool>> {
-    static A: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+fn availability() -> &'static Mutex<HashMap<String, (u64, bool)>> {
+    static A: OnceLock<Mutex<HashMap<String, (u64, bool)>>> = OnceLock::new();
     A.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -990,12 +1012,15 @@ pub(crate) fn available(name: &str) -> bool {
     if name == "null" {
         return true;
     }
-    if let Some(a) = availability().lock().ok().and_then(|a| a.get(name).copied()) {
+    let generation = cache_generation();
+    if let Some((_, a)) = availability().lock().ok().and_then(|a| a.get(name).copied()).filter(|(g, _)| *g == generation) {
         return a;
     }
     let a = present_locally(name) || (network_enabled() && name.ends_with(".tif") && !name.contains(['/', '\\']));
-    if let Ok(mut m) = availability().lock() {
-        m.insert(name.to_string(), a);
+    if let Ok(mut m) = availability().lock()
+        && generation == cache_generation()
+    {
+        m.insert(name.to_string(), (generation, a));
     }
     a
 }
@@ -1003,6 +1028,7 @@ pub(crate) fn available(name: &str) -> bool {
 /// Forgets which grids were found, so that the next lookups search again (after the grid
 /// directories or network setting change).
 pub fn reset_grid_cache() {
+    CACHE_GENERATION.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut a) = availability().lock() {
         a.clear();
     }
@@ -1090,7 +1116,7 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
 }
 
 /// Grid sets built, by grid name and use.
-type SetsCache = Mutex<HashMap<(String, char), Arc<GridSet>>>;
+type SetsCache = Mutex<HashMap<(String, char), (u64, Arc<GridSet>)>>;
 
 fn sets_cache() -> &'static SetsCache {
     static CACHE: OnceLock<SetsCache> = OnceLock::new();
@@ -1104,14 +1130,18 @@ where
     let cache = sets_cache();
     let mut out = Vec::new();
     for (name, optional) in grid_names(spec) {
-        if let Some(s) = cache.lock().ok()?.get(&(name.clone(), kind)) {
+        let generation = cache_generation();
+        if let Some((_, s)) = cache.lock().ok()?.get(&(name.clone(), kind)).filter(|(g, _)| *g == generation) {
             out.push(s.clone());
             continue;
         }
         match load(&name).and_then(|f| build(&f)).filter(|g| !g.is_empty()) {
             Some(grids) => {
                 let s = Arc::new(GridSet { grids });
-                cache.lock().ok()?.insert((name, kind), s.clone());
+                let mut cache = cache.lock().ok()?;
+                if generation == cache_generation() {
+                    cache.insert((name, kind), (generation, s.clone()));
+                }
                 out.push(s);
             }
             None if optional => {}
