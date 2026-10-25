@@ -52,7 +52,7 @@ In WebAssembly, these formats are read from and written to memory:
 | | Read | Write |
 |---|---|---|
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
-| Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, KML, KMZ, GML, GPX, OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX |
+| Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, KML, KMZ, GML, GPX, DWG and DXF (full module), OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX, DWG and DXF (full module) |
 | Point cloud | LAS, LAZ, COPC, PLY, E57 | LAS, LAZ, COPC, PLY, E57 |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
@@ -76,12 +76,19 @@ The package holds two WebAssembly modules with the same API. `terrio-js` has eve
 `terrio-js/core` leaves out the heaviest ones (GeoParquet and Arrow IPC, netCDF and HDF5, point
 clouds, JPEG 2000, GRIB, Zarr, AVIF tiles and OpenStreetMap) and keeps GeoTIFF/COG with all its
 compressions, GeoJSON and the other text formats, FlatGeobuf, GeoPackage, Shapefile, PMTiles and
-MBTiles, the CRS transformations and the operations, at about half the size:
+MBTiles, the CRS transformations and the operations, with a smaller download. The full module also
+includes DWG/DXF through the `cad` feature; the core module leaves CAD out. See the
+[CAD supported subset](../docs/formats.md#cad-drawings-dwg-and-dxf).
+
+Measured from the optimized CAD-enabled [CI package at `b371d79`](https://github.com/opengeos/terrio/actions/runs/40144408237)
+(`wasm-release` profile, wasm-opt `-Oz`). MB are decimal (1,000,000 bytes); compression uses
+gzip level 9 with no timestamp and Brotli quality 11. These are a recorded build snapshot,
+not a guarantee for other Rust/wasm-opt versions:
 
 | Module | `.wasm` | gzip | Brotli |
 |---|---|---|---|
-| `terrio-js` | 16.4 MB | 5.6 MB | 4.1 MB |
-| `terrio-js/core` | 8.9 MB | 3.0 MB | 2.3 MB |
+| `terrio-js` | 22.10 MB | 7.71 MB | 5.67 MB |
+| `terrio-js/core` | 9.67 MB | 3.36 MB | 2.56 MB |
 
 ```js
 import init, { open, features } from "terrio-js/core";
@@ -97,8 +104,7 @@ with a dynamic `import("terrio-js")`: datasets belong to the module that opened 
 is passed only to the functions of its own module.
 
 Both modules are built for size: whole-program LTO, the codecs optimized for speed and the rest
-for size, and wasm-opt -Oz. The full module is 21% smaller than before (20.6 MB, 6.7 MB gzipped)
-and decodes and writes as fast.
+for size, and wasm-opt -Oz.
 
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
