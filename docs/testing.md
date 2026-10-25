@@ -313,3 +313,19 @@ area (at most `max(1e-6, reference area * 1e-12)` per feature). Rust regressions
 also cover holes, corner-touching regions, empty output schemas, field validation
 and sequential singlepart IDs. Python's bundled CLI uses the same options; there
 is currently no direct footprint operation in the Python or JavaScript bindings.
+
+## Standalone CRS feature coverage
+
+Run the standalone suite separately from the workspace to avoid Cargo feature
+unification with Terrio, which enables the optional projection fallback:
+
+```sh
+TERRIO_TEST_DATA=../terrio-data cargo test -p terrio-crs
+TERRIO_TEST_DATA=../terrio-data cargo test -p terrio-crs --all-features
+```
+
+Both runs exercise EPSG tables and grids; the data-dependent tests require the
+reference datasets described above. The 117-method inventory explicitly checks
+40 native methods with default features and 86 with `wbprojection-fallback`.
+Unsupported methods must be refused in every tested encoding. The projection
+conformance runner enables the fallback to retain Terrio's full coverage.
