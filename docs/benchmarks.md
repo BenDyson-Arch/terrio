@@ -50,6 +50,16 @@ They are machine-specific snapshots, not guarantees of performance on other data
 - Memory ratios are omitted: launching commands from a Python process that also validates large
   datasets can contaminate child peak-RSS accounting with inherited parent memory.
 
+## Output mismatch follow-up
+
+The [#253 investigation](benchmark-parity.md) records complete error measurements,
+metadata/schema fixes, native WebP corrections and explicit GDAL 3.13 COG/terrain
+profiles. [All eight affected cases were rerun](benchmark-253-rerun.md), including
+fresh timing samples and CPU tuning at budgets one and two. Six pass exact output
+validation; warp and counties retain documented numerical residuals. Background
+CPU activity exceeded the unchanged measurement limit, so no new speed ratios are
+eligible. The tables below retain their original samples.
+
 ## Correctness gates
 
 A zero exit status is insufficient. Failed commands, validation errors, differing outputs, and

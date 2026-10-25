@@ -25,6 +25,37 @@ TERRIO = os.environ.get(
 USGS = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif"
 
 
+@cache
+def gdal_kernel_version():
+    """Match Terrio's existing warp policy to the GDAL used by this benchmark."""
+    from osgeo import gdal
+
+    version = int(gdal.VersionInfo("VERSION_NUM"))
+    if 3120000 <= version < 3130000:
+        return "3.12"
+    if 3130000 <= version < 3140000:
+        return "3.13"
+    raise ValueError("benchmark warp comparisons support GDAL 3.12 and 3.13")
+
+
+def terrio_warp(binary):
+    """Use equal kernel semantics; exact output validation still decides equivalence."""
+    return [binary, "warp", "--kernel-version", gdal_kernel_version()]
+
+
+def terrio_dem(binary, processing):
+    """Select the reference terrain arithmetic explicitly."""
+    return [binary, "dem", processing, "--kernel-version", gdal_kernel_version()]
+
+
+def terrio_cog(binary):
+    """Select recursive, floor-sized overviews when the reference uses GDAL 3.13."""
+    command = [binary, "convert"]
+    if gdal_kernel_version() == "3.13":
+        command += ["--co", "COG_OVERVIEW_POLICY=GDAL_3_13"]
+    return command
+
+
 def warp(threads):
     """Return ``gdalwarp`` with its multithreading on.
 
@@ -75,7 +106,7 @@ def cases(d, out, threads):
         (
             "Raster conversion",
             "GeoTIFF → COG (Deflate): USGS 3DEP tile",
-            [t, "convert", p("usgs_dem.tif"), o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
+            [*terrio_cog(t), p("usgs_dem.tif"), o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
             [
                 "gdal_translate",
                 "-q",
@@ -112,13 +143,13 @@ def cases(d, out, threads):
         (
             "Raster operations",
             "Warp to NAD83 / UTM 13N, nearest: USGS 3DEP tile",
-            [t, "warp", p("usgs_dem.tif"), o("e.tif"), "--t-srs", "EPSG:26913"],
+            [*terrio_warp(t), p("usgs_dem.tif"), o("e.tif"), "--t-srs", "EPSG:26913"],
             [*warp(threads), "-t_srs", "EPSG:26913", p("usgs_dem.tif"), o("e.tif")],
         ),
         (
             "Raster operations",
             "Warp to NAD83 / UTM 13N, bilinear: USGS 3DEP tile",
-            [t, "warp", p("usgs_dem.tif"), o("f.tif"), "--t-srs", "EPSG:26913", "-r", "bilinear"],
+            [*terrio_warp(t), p("usgs_dem.tif"), o("f.tif"), "--t-srs", "EPSG:26913", "-r", "bilinear"],
             [*warp(threads), "-t_srs", "EPSG:26913", "-r", "bilinear", p("usgs_dem.tif"), o("f.tif")],
         ),
         (
@@ -131,7 +162,7 @@ def cases(d, out, threads):
             "Raster operations",
             "Mosaic 4 USGS 3DEP tiles → VRT",
             [t, "mosaic", *tiles, o("h.vrt")],
-            ["gdal", "raster", "mosaic", "-q", "--resolution", "average", "-f", "VRT", *tiles, o("h.vrt")],
+            ["gdal", "raster", "mosaic", "--config", "VRT_VIRTUAL_OVERVIEWS", "NO", "-q", "--resolution", "average", "-f", "VRT", *tiles, o("h.vrt")],
         ),
         (
             "Vector conversion",
@@ -204,7 +235,7 @@ def large_cases(d, out, threads):
         (
             r,
             "GeoTIFF → COG (Deflate): the mosaic",
-            [t, "convert", dem, o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
+            [*terrio_cog(t), dem, o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
             ["gdal_translate", "-q", "-of", "COG", "-co", "COMPRESS=DEFLATE", "-co", "OVERVIEWS=IGNORE_EXISTING", "-co", "RESAMPLING=AVERAGE", dem, o("a.tif")],
         ),
         (
@@ -216,12 +247,12 @@ def large_cases(d, out, threads):
         (
             r,
             "Warp the mosaic to NAD83 / UTM 13N, bilinear",
-            [t, "warp", "--t-srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
+            [*terrio_warp(t), "--t-srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
             [*warp(threads), "-t_srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
         ),
         (r, "Mosaic 16 USGS 3DEP tiles → GeoTIFF", [t, "mosaic", *tiles, o("d.tif")], mosaic(tiles, o("d.tif"))),
-        (r, "Hillshade of the mosaic", [t, "dem", "hillshade", dem, o("e.tif")], ["gdaldem", "hillshade", "-q", dem, o("e.tif")]),
-        (r, "Slope of the mosaic", [t, "dem", "slope", dem, o("f.tif")], ["gdaldem", "slope", "-q", dem, o("f.tif")]),
+        (r, "Hillshade of the mosaic", [*terrio_dem(t, "hillshade"), dem, o("e.tif")], ["gdaldem", "hillshade", "-q", dem, o("e.tif")]),
+        (r, "Slope of the mosaic", [*terrio_dem(t, "slope"), dem, o("f.tif")], ["gdaldem", "slope", "-q", dem, o("f.tif")]),
         (
             r,
             "Sentinel-2 band: JPEG 2000 → GeoTIFF",

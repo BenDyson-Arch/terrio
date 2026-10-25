@@ -31,6 +31,8 @@ pub(crate) struct GeoTags {
     pub metadata: Vec<(String, String)>,
     /// Band metadata items from the `GDAL_METADATA` tag: `(band from 0, name, value)`.
     pub band_metadata: Vec<(usize, String, String)>,
+    /// Descriptive properties, including TIFF photometric colors and GDAL role overrides.
+    pub band_properties: Vec<crate::BandMetadata>,
     /// Whether the raster type is `RasterPixelIsPoint`.
     pub pixel_is_point: bool,
     /// The `GDAL_NODATA` value.
@@ -136,11 +138,14 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
                 let index = (e.as_ptr() as usize - entries.as_ptr() as usize) as u64;
                 palette_offset = Some(entry_start + index + if big { 12 } else { 8 });
             }
-            continue;
         }
         if !matches!(
             tag,
-            MODEL_PIXEL_SCALE
+            PHOTOMETRIC
+                | 259
+                | 277
+                | 338
+                | MODEL_PIXEL_SCALE
                 | MODEL_TIEPOINT
                 | MODEL_TRANSFORMATION
                 | GEO_KEY_DIRECTORY
@@ -210,6 +215,53 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
     });
 
     let mut out = GeoTags { palette_photometric_offsets: palette_offsets, little_endian: le, ..Default::default() };
+    let shorts = |tag: u16| {
+        tags.iter().find_map(|(k, v)| match v {
+            Values::Shorts(s) if *k == tag => Some(s.as_slice()),
+            _ => None,
+        })
+    };
+    let photometric = shorts(PHOTOMETRIC).and_then(|s| s.first()).copied().unwrap_or(1);
+    let samples = shorts(277).and_then(|s| s.first()).copied().unwrap_or(1) as usize;
+    let jpeg = shorts(259).and_then(|s| s.first()).copied() == Some(7);
+    let base = match photometric {
+        2 | 6 | 8 | 9 | 10 => 3,
+        5 => 4,
+        _ => 1,
+    };
+    out.band_properties = (0..samples)
+        .map(|i| {
+            let color = match (photometric, i) {
+                (0 | 1, 0) => "Gray",
+                (2, 0) => "Red",
+                (2, 1) => "Green",
+                (2, 2) => "Blue",
+                (6, 0) if jpeg => "Red",
+                (6, 1) if jpeg => "Green",
+                (6, 2) if jpeg => "Blue",
+                (6, 0) => "YCbCr_Y",
+                (6, 1) => "YCbCr_Cb",
+                (6, 2) => "YCbCr_Cr",
+                (5, 0) => "Cyan",
+                (5, 1) => "Magenta",
+                (5, 2) => "Yellow",
+                (5, 3) => "Black",
+                (3, 0) => "Palette",
+                _ if i >= base && shorts(338).and_then(|v| v.get(i - base)).is_some_and(|v| matches!(v, 1 | 2)) => "Alpha",
+                _ => "Undefined",
+            };
+            crate::BandMetadata { color_interp: Some(color.into()), ..Default::default() }
+        })
+        .collect();
+    if let Some(xml) = ascii(GDAL_METADATA) {
+        for item in crate::drivers::gtiff_write::gdal_metadata_items(xml) {
+            let Some(i) = item.attr("sample").and_then(|s| s.parse::<usize>().ok()) else { continue };
+            let Some(band) = out.band_properties.get_mut(i) else { continue };
+            if item.attr("role") == Some("colorinterp") && item.attr("domain").is_none() {
+                band.color_interp = Some(color_interpretation(&item.text).into());
+            }
+        }
+    }
     let has_scale = doubles(MODEL_PIXEL_SCALE).is_some_and(|s| s.len() >= 2);
     if let Some(tie) = doubles(MODEL_TIEPOINT).filter(|t| t.len() >= 6)
         && doubles(MODEL_TRANSFORMATION).is_none()
@@ -255,6 +307,53 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         }
     }
     Some(out)
+}
+
+/// Canonical GDAL band roles; unknown metadata roles map to Undefined as GDAL does.
+fn color_interpretation(value: &str) -> &'static str {
+    const NAMES: &[&str] = &[
+        "Undefined",
+        "Gray",
+        "Palette",
+        "Red",
+        "Green",
+        "Blue",
+        "Alpha",
+        "Hue",
+        "Saturation",
+        "Lightness",
+        "Cyan",
+        "Magenta",
+        "Yellow",
+        "Black",
+        "YCbCr_Y",
+        "YCbCr_Cb",
+        "YCbCr_Cr",
+        "Pan",
+        "Coastal",
+        "RedEdge",
+        "NIR",
+        "SWIR",
+        "MWIR",
+        "LWIR",
+        "TIR",
+        "OtherIR",
+        "IR_Reserved_1",
+        "IR_Reserved_2",
+        "IR_Reserved_3",
+        "IR_Reserved_4",
+        "SAR_Ka",
+        "SAR_K",
+        "SAR_Ku",
+        "SAR_X",
+        "SAR_C",
+        "SAR_S",
+        "SAR_L",
+        "SAR_P",
+        "SAR_Reserved_1",
+        "SAR_Reserved_2",
+    ];
+    NAMES.iter().copied().find(|name| name.eq_ignore_ascii_case(value.trim())).unwrap_or("Undefined")
 }
 
 /// The CRS of a GeoKey directory and its double and ASCII parameters (as stored in GeoTIFF tags
@@ -689,6 +788,8 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     let raster = crate::pixel::raster_from_data(cfg, data)?;
     let has_nodata = tags.nodata.is_some();
     let mut ds = crate::RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, has_nodata);
+    ds.band_metadata = tags.band_properties.clone();
+    ds.gcps = tags.gcps.clone();
     if !tags.band_nodata.is_empty() {
         ds.band_nodata = (1..=samples).map(|b| tags.band_nodata.iter().find(|(i, _)| *i == b).map(|(_, v)| *v).or(tags.nodata)).collect();
         ds.has_nodata = ds.band_nodata[0].is_some();
@@ -754,6 +855,18 @@ impl<R: Seek> Seek for PatchedReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_xml_handles_quotes_entities_and_validated_color_roles() {
+        use crate::drivers::gtiff_write::{gdal_metadata_items, parse_gdal_band_metadata, parse_gdal_metadata};
+        let xml = "<GDALMetadata><Item name='COLORINTERP' sample='0' role='colorinterp'>Gr&#97;y</Item><Item name='title'>a&amp;lt;b &amp;amp;lt;literal</Item><Item name='note' sample='1'>c&amp;amp;d &amp;amp;amp;literal</Item></GDALMetadata>";
+        let items = gdal_metadata_items(xml);
+        assert_eq!(items[0].attr("role"), Some("colorinterp"));
+        assert_eq!(color_interpretation(&items[0].text), "Gray");
+        assert_eq!(color_interpretation("not a color &amp; role"), "Undefined");
+        assert_eq!(parse_gdal_metadata(xml), [("title".into(), "a<b &lt;literal".into())]);
+        assert_eq!(parse_gdal_band_metadata(xml), [(1, "note".into(), "c&d &amp;literal".into())]);
+    }
 
     #[test]
     fn identifies_user_defined_utm() {

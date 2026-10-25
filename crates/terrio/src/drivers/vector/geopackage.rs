@@ -657,11 +657,8 @@ impl Builder {
             }
             let t = match f.field_type {
                 FieldType::Integer => {
-                    if small(i) {
-                        "MEDIUMINT".to_string()
-                    } else {
-                        "INTEGER".to_string()
-                    }
+                    // DBF widths >= 10 declare Integer64, irrespective of current values.
+                    if f.width < 10 && small(i) { "MEDIUMINT".to_string() } else { "INTEGER".to_string() }
                 }
                 FieldType::Float => "REAL".into(),
                 FieldType::Boolean => "BOOLEAN".into(),
@@ -1104,6 +1101,16 @@ mod tests {
             let want = old_rtree(entries);
             assert!(nodes == want.0 && rowids == want.1 && parents == want.2, "{n} entries");
         }
+    }
+
+    #[test]
+    fn retains_declared_wide_integer_fields() {
+        let mut layer = Layer::new("places");
+        layer.add_field(FieldDef::new("population", FieldType::Integer).width(10));
+        layer.push(Feature { fid: 1, geometry: None, attributes: vec![FieldValue::Integer(42)] });
+        let mut builder = Builder::new();
+        let columns = builder.layer_columns(&layer, true, None, false, None, |_| true);
+        assert!(columns.sql.contains("\"population\" INTEGER"), "{}", columns.sql);
     }
 
     #[test]

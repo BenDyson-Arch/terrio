@@ -227,3 +227,41 @@ source centres, GDAL's optimized stretched Lanczos recurrence can differ from
 Terrio's direct sinc evaluation. A 40×30 USGS case showed a maximum 2.54 m
 difference; the fractional-origin rotated cases above agree exactly. This is
 separate from the 3.13 scale change and is not claimed as pixel-identical parity.
+
+## Benchmark mismatch regressions
+
+The `benchmark-metadata` conformance suite compares real SRTM Zarr output, a
+four-tile USGS VRT and Natural Earth populated places in GeoPackage against GDAL.
+It also checks a real SRTM crop with 1,599 assigned GCPs through COG conversion:
+
+```sh
+python scripts/conformance.py ../terrio-data --only benchmark-metadata --strict
+```
+
+It requires exact GCP coordinates and CRS, no invented affine, and exact colors,
+field schemas, pixels, masks, attributes and normalized
+geometries. The VRT reference explicitly disables GDAL 3.13's synthetic virtual
+overviews to match Terrio's supported base-resolution output. The separate
+[benchmark output investigation](benchmark-parity.md) records full numerical
+errors and intentional differences; benchmark equivalence checks remain exact.
+
+The `benchmark-compat` suite independently decodes native WebP and JPEG XL output
+with GDAL, verifies lossless pixels and alpha, checks that WebP quality changes
+lossy output, and compares both GDAL terrain arithmetic profiles (Horn and
+Zevenbergen–Thorne). With GDAL 3.13 it also compares every COG overview on a real
+DEM and an odd-sized optical crop:
+
+```sh
+python scripts/conformance.py ../terrio-data --only benchmark-compat --strict
+```
+
+The GDAL 3.13 COG profile supports nearest/average without alpha or explicit masks.
+The GDAL 3.13 terrain profile covers slope and standard hillshade. Exactness on
+these fixtures does not promise identical transcendental/SIMD rounding across
+architectures. JPEG XL cases cover Byte/UInt16, one/three bands, strips and tiles;
+macOS/Windows CI runs the matching native round-trip regression.
+
+The benchmark compatibility suite also preserves entity text from GDAL-authored
+TIFF metadata and asserts actual JPEG XL block dimensions. The portable GDAL 3.13
+slope golden unit check permits one Float32 ULP for platform `atan` rounding; this
+allowance does not apply to exact benchmark or conformance comparisons.

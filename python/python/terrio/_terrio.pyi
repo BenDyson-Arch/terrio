@@ -887,7 +887,11 @@ def dem(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
-) -> Raster: ...
+    kernel_version: str = "3.12",
+) -> Raster:
+    """Compute terrain; GDAL 3.13 hillshade rounding varies across CPUs/architectures."""
+    ...
+
 def calc(
     calc: str | Sequence[str],
     dst: str | None = None,
