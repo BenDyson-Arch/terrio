@@ -437,9 +437,10 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
 impl GeoTags {
     /// Takes the CRS of the `.aux.xml` sidecar of the file at `path`, when it holds one: it
     /// overrides the GeoKeys, as GDAL reads it (GDAL writes there the CRSs GeoKeys cannot hold).
-    pub(crate) fn apply_sidecar_crs(&mut self, path: &std::path::Path) {
+    /// Returns whether the sidecar was read.
+    pub(crate) fn apply_sidecar_crs(&mut self, path: &std::path::Path) -> bool {
         let Some(pam) = crate::drivers::common::read_pam(path) else {
-            return;
+            return false;
         };
         self.nodata = self.nodata.or(pam.dataset_nodata);
         self.band_nodata = pam.band_nodata;
@@ -449,6 +450,7 @@ impl GeoTags {
             self.crs = Some(crs);
             self.unreadable_method = None;
         }
+        true
     }
 
     /// Warns of a GeoKeys projection method that left the raster without CRS (see

@@ -312,6 +312,25 @@ impl LazyRaster {
         Ok(paths)
     }
 
+    /// The files the dataset is read from, as GDAL's `GetFileList` lists them: for a GeoTIFF, the
+    /// file as it was named (a path, URL or archive member), the `.aux.xml` sidecar whose CRS or
+    /// nodata it took and the `.msk` sidecar mask; the files of a VRT or catalog's sources. Empty
+    /// for rasters in memory or read from a [`crate::sparse::SparseFile`]. Unlike GDAL's, the
+    /// list has no `.ovr` (terrio does not read them) or RPC sidecar.
+    pub fn file_list(&self) -> Result<Vec<String>> {
+        let mut files = match &self.inner {
+            Inner::Tiff(t) => t.files.clone(),
+            Inner::Memory(_) => Vec::new(),
+            Inner::Source(..) => return self.input_paths(),
+        };
+        // After the file, as GDAL lists them: its `.msk`, then its `.aux.xml`.
+        if let Some(mask) = &self.sidecar_mask {
+            let at = files.len().min(1);
+            files.splice(at..at, mask.file_list()?);
+        }
+        Ok(files)
+    }
+
     /// Opens a raster: a path, URL, `s3://`, `gs://` or `az://` object, or zip archive member.
     ///
     /// GeoTIFFs are read in place: only their headers are read now. Other formats are read whole.
@@ -397,8 +416,11 @@ impl LazyRaster {
             return Ok(None);
         }
         let mut t = TiffRaster::new(source, local, limits)?;
-        if let Location::Local(p) = &loc {
-            t.tags.apply_sidecar_crs(p);
+        t.files.push(path.to_string());
+        if let Location::Local(p) = &loc
+            && t.tags.apply_sidecar_crs(p)
+        {
+            t.files.push(format!("{path}.aux.xml"));
         }
         t.tags.warn_unreadable(path);
         t.file = file;
@@ -1047,6 +1069,8 @@ struct TiffRaster {
     file: Option<std::path::PathBuf>,
     /// The decoders' limits.
     limits: TiffReadLimits,
+    /// The files [`LazyRaster::file_list`] lists: the TIFF as it was named, and the sidecars read.
+    files: Vec<String>,
 }
 
 /// What more decoders of a TIFF read: its local file, or its bytes in memory.
@@ -1097,7 +1121,20 @@ impl TiffRaster {
         // As the in-memory reader does without georeferencing: unit pixels, with the image's
         // bottom at y = 0.
         let geo_transform = tags.corner_geo_transform().unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]);
-        Ok(Self { decoder: dec, tags, bands, data_type, geo_transform, levels, masks, current_ifd: 0, _local: local, file: None, limits })
+        Ok(Self {
+            decoder: dec,
+            tags,
+            bands,
+            data_type,
+            geo_transform,
+            levels,
+            masks,
+            current_ifd: 0,
+            _local: local,
+            file: None,
+            limits,
+            files: Vec::new(),
+        })
     }
 
     /// Reads a window of some bands (numbered from 1) of a level, band-major.
