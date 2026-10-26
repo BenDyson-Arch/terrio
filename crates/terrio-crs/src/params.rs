@@ -64,7 +64,9 @@ fn tokens(s: &str) -> Vec<String> {
                 token.push('"');
                 chars.next();
             }
-            '"' => quoted = !quoted,
+            // A quote opens a value right after `=`, and closes it; elsewhere it is a character,
+            // such as DMS seconds (`52d30'10"N`).
+            '"' if quoted || token.ends_with('=') => quoted = !quoted,
             c if c.is_whitespace() && !quoted => out.extend((!token.is_empty()).then(|| std::mem::take(&mut token))),
             c => token.push(c),
         }
@@ -119,6 +121,14 @@ mod tests {
         assert!((p.angle("lat_0").unwrap().to_degrees() - 40.5).abs() < 1e-12);
         assert_eq!(parse_dms("-74.5"), Some(-74.5));
         assert_eq!(parse_dms("74d30W"), Some(-74.5));
+    }
+
+    #[test]
+    fn dms_seconds_are_not_quotes() {
+        let p = Params::parse(r#"+proj=tmerc +lat_0=52d30'10"N +lon_0=5d10'20"E +title="a b" +k=0.9996"#);
+        assert!((p.angle("lat_0").unwrap().to_degrees() - (52.0 + 30.0 / 60.0 + 10.0 / 3600.0)).abs() < 1e-12);
+        assert!((p.angle("lon_0").unwrap().to_degrees() - (5.0 + 10.0 / 60.0 + 20.0 / 3600.0)).abs() < 1e-12);
+        assert_eq!((p.str("title"), p.f64("k")), (Some("a b"), Some(0.9996)));
     }
 
     #[test]

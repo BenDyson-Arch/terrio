@@ -304,6 +304,12 @@ fn quoted_proj_string_values_read_as_in_proj() {
         (r#"+proj=tmerc +k="0.9996" +datum=WGS84"#, (0.899082904747, 1.809232575375)),
         (r#"+proj=tmerc +ellps=WGS84 +towgs84="1,2,3""#, (0.898740777200, 1.808535889369)),
         (r#"+proj=tmerc +title="UTM ""zone"" 32" +k=0.9996 +lon_0=9 +datum=WGS84"#, (9.899082904747, 1.809232575375)),
+        // DMS seconds are not quotes, before a quoted value and after it.
+        (r#"+proj=tmerc +lat_0=52d30'10"N +lon_0=5d10'20"E +k=0.9996 +x_0=500000 +datum=WGS84"#, (-0.954933652114, 54.144493283792)),
+        (
+            r#"+proj=tmerc +title="x y" +lat_0=52d30'10"N +lon_0=5d10'20"E +k=0.9996 +x_0=500000 +datum=WGS84"#,
+            (-0.954933652114, 54.144493283792),
+        ),
     ] {
         let projected = SpatialRef::from_proj4(definition).unwrap();
         let (lo, la) = Transformer::new(&projected, &geo).unwrap().transform(100_000.0, 200_000.0).unwrap();
