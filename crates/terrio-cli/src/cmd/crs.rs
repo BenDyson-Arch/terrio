@@ -10,6 +10,9 @@ pub struct Args {
     /// Print the WKT definition.
     #[arg(long)]
     wkt: bool,
+    /// Print the PROJJSON definition (refused for a CRS it would describe wrongly).
+    #[arg(long)]
+    projjson: bool,
     /// Transform coordinates into this CRS. Reads `x y` pairs from the arguments, or lines of
     /// `x y`, `x y z` or `x y z t` (t: a decimal year) from standard input when none are given,
     /// as `gdaltransform` does (printing `transformation failed.` for a point that fails).
@@ -51,6 +54,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
             && let Some(w) = src.to_wkt()
         {
             println!("{w}");
+        }
+        if a.projjson {
+            println!("{}", src.to_projjson()?);
         }
         return Ok(());
     };

@@ -6,6 +6,7 @@ code is the WKT1 that GDAL writes.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Mapping
@@ -513,15 +514,31 @@ class CRS(Mapping[str, Any]):
         """
         return " ".join(f"+{k}={v}" for k, v in self.to_dict().items())
 
+    def to_projjson(self) -> str:
+        """The CRS as PROJJSON v0.7.
+
+        Returns:
+            str: The PROJJSON.
+
+        Raises:
+            CRSError: If terrio would describe the CRS wrongly in PROJJSON.
+        """
+        try:
+            return _terrio.crs_to_projjson(self._input)
+        except Exception as err:
+            raise CRSError(f"No PROJJSON for '{self._input}': {err}") from err
+
     def to_dict(self, projjson: bool = False) -> dict[str, Any]:
-        """The CRS as PROJ parameters.
+        """The CRS as PROJ parameters, or as PROJJSON.
 
         Args:
-            projjson: Unused: PROJJSON is not supported.
+            projjson: The PROJJSON (as rasterio's `to_dict(projjson=True)`).
 
         Returns:
             dict: The parameters.
         """
+        if projjson:
+            return json.loads(self.to_projjson())
         proj4 = self._info.get("proj4")
         if proj4:
             return _proj_dict(proj4)

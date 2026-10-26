@@ -159,6 +159,19 @@ fn vector_conversion_refuses_ballparks_and_reports_fallbacks() {
 }
 
 #[test]
+fn crs_prints_projjson() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run(&["crs", "EPSG:32632", "--projjson"], dir.path());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8(output.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
+    assert_eq!((v["type"].as_str(), v["conversion"]["name"].as_str()), (Some("ProjectedCRS"), Some("UTM zone 32N")));
+    // Refused rather than written wrongly.
+    let output = run(&["crs", "+proj=longlat +lon_0=10 +datum=WGS84", "--projjson"], dir.path());
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("+lon_0=10"));
+}
+
+#[test]
 fn crs_promotes_2d_crss_to_3d_on_request() {
     // RD New to WGS 84 3D: the height is kept (h = 0) unless the 2D CRS is promoted, when it goes
     // through the datum transformation (43.6 m, as GDAL after `PromoteTo3D`).

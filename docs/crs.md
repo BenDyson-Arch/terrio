@@ -479,12 +479,14 @@ This prevents silent loss of datum, axis, unit or operation information.
 
 ### Writing PROJJSON
 
-`SpatialRef::to_projjson` (Rust only, as `from_projjson`) writes PROJJSON v0.7 for geographic 2D
-and 3D, geocentric, projected, vertical, compound and bound (`+towgs84`) CRSs. The
-`projjson-export` suite of `scripts/conformance.py` compares it with live PROJ's PROJJSON of 45
-CRSs by meaning (identifiers, datums, ellipsoids, prime meridians, axes, methods and parameters
-by EPSG code), has GDAL read them and every IAU_2015 CRS, and checks they transform as the
-originals do. Planetary CRSs are written as PROJ writes them: west-positive longitudes as west
+`SpatialRef::to_projjson` writes PROJJSON v0.7 for geographic 2D and 3D, geocentric, projected,
+vertical, compound and bound (`+towgs84`) CRSs: `terrio crs CRS --projjson` (and MCP), Python
+`rio.CRS.to_projjson()` (and `to_dict(projjson=True)`), JavaScript `crsToProjjson(crs)`. PROJJSON
+is read wherever a CRS is (above). The `projjson-export` suite of `scripts/conformance.py`
+compares it with live PROJ's PROJJSON of 52 CRSs by meaning (identifiers, datums, ellipsoids,
+prime meridians, axes, methods and parameters by EPSG code) and has GDAL transform points with
+them and with the originals, through each CRS's geographic CRS (a vertical CRS paired with
+WGS 84; no grids), and does the same for every IAU_2015 CRS. Planetary CRSs are written as PROJ writes them: west-positive longitudes as west
 axes, planetocentric latitudes (`+geoc`, a spherical coordinate system) as a `GeodeticCRS` with a
 spherical coordinate system, IAU_2015 CRSs with their `IAU`/2015 identifier. Differences from
 PROJ's output:
