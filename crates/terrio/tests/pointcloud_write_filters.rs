@@ -549,6 +549,49 @@ fn ept_datasets_take_points_appended() {
     }
 }
 
+/// Zstandard EPT tiles of several frames (a skippable one among them), as other writers may
+/// store them, are read whole when points are appended, not as their first frame.
+#[test]
+fn ept_zstandard_tiles_of_several_frames_take_points_appended() {
+    let c = cloud(6_000, 23);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("set/ept.json");
+    let path_s = path.to_str().unwrap();
+    let b = c.bounds().unwrap();
+    let options = PointWriteOptions {
+        ept_data_type: EptDataType::Zstandard,
+        ept_bounds: Some([b[0], b[1], b[2], b[3], b[4], b[5]]),
+        ..Default::default()
+    };
+    pointcloud::write_points(&c.slice(0, 4_000), path_s, &options).unwrap();
+    // Every tile rewritten as two frames with a skippable frame between them.
+    let mut split = 0;
+    for entry in std::fs::read_dir(path.with_file_name("ept-data")).unwrap() {
+        let tile = entry.unwrap().path();
+        let mut records = Vec::new();
+        std::io::Read::read_to_end(&mut ruzstd::decoding::StreamingDecoder::new(&std::fs::read(&tile).unwrap()[..]).unwrap(), &mut records)
+            .unwrap();
+        let half = records.len() / 2;
+        let compress = |b: &[u8]| ruzstd::encoding::compress_to_vec(b, ruzstd::encoding::CompressionLevel::Fastest);
+        let skippable = [0x184D_2A50u32.to_le_bytes(), 4u32.to_le_bytes(), *b"skip"].concat();
+        std::fs::write(&tile, [compress(&records[..half]), skippable, compress(&records[half..])].concat()).unwrap();
+        split += 1;
+    }
+    assert!(split > 0);
+    let mut a = pointcloud::EptAppender::open(path_s, &options).unwrap();
+    a.start_source("more.laz", &c).unwrap();
+    a.write(&c.slice(4_000, 6_000)).unwrap();
+    a.finish().unwrap();
+    // Every point, the tiles left in several frames read whole too.
+    let las = pointcloud::open_points_bytes(pointcloud::write_points_bytes(&c, "a.las", &Default::default()).unwrap(), "a.las")
+        .unwrap()
+        .read(&Default::default())
+        .unwrap();
+    let back = pointcloud::open_points(path_s).unwrap().read(&Default::default()).unwrap();
+    let names = ["x", "y", "z", "intensity", "gps_time"];
+    assert_eq!(sorted_rows(&back, &names), sorted_rows(&las, &names));
+}
+
 /// Points outside an EPT dataset's cube are refused, and the dataset is left as it was; so are
 /// points in another CRS.
 #[test]

@@ -1071,7 +1071,10 @@ impl EptAppender {
                 out
             }
             (_, EptDataType::Zstandard) => {
-                crate::zstandard::decompress(&bytes).map_err(|e| Error::InvalidData(format!("EPT tile {}: {e}", key_name(key))))?
+                // At most the records of the node's points in the hierarchy.
+                let points = self.hierarchy.get(&key).copied().unwrap_or(0);
+                let limit = usize::try_from(points).ok().and_then(|n| n.checked_mul(self.rl)).unwrap_or(usize::MAX);
+                crate::zstandard::decompress(&bytes, limit).map_err(|e| Error::InvalidData(format!("EPT tile {}: {e}", key_name(key))))?
             }
             _ => bytes,
         };
