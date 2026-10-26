@@ -150,6 +150,20 @@ fn a_window_too_large_to_allocate_is_an_error() {
 }
 
 #[test]
+fn a_window_that_cannot_be_allocated_is_an_error() {
+    // 10^6 x 10^6 Float64 pixels (8 TB): a size that does not overflow, but that no allocation
+    // holds. The full window aborted the process, before any chunk was read.
+    let bytes = single_strip(1_000_000, 1_000_000, 128, false);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("huge.tif");
+    std::fs::write(&path, &bytes).unwrap();
+    for mut r in [LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap(), terrio::open_raster_lazy(path.to_str().unwrap()).unwrap()] {
+        let e = r.read_window(Window::full(r.width(), r.height()), &band1()).unwrap_err();
+        assert!(matches!(e, terrio::Error::InvalidArgument(ref m) if m.contains("too large to allocate")), "{e}");
+    }
+}
+
+#[test]
 fn oversized_tiled_windows_are_rejected_before_fetching_chunks() {
     // A single enormous tile has valid metadata, with its payload far beyond the
     // header blocks. Reject the output size before prefetching that payload.

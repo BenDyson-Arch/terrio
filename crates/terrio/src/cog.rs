@@ -1244,7 +1244,7 @@ impl TiffRaster {
         dec.inner().get_ref().prefetch(&ranges)?;
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
-        let mut out = RasterData::new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0));
+        let mut out = try_new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0))?;
         let spp = if planar { 1 } else { self.bands };
         // Chunks with data, and where they go.
         let mut wanted: Vec<u32> = Vec::with_capacity(chunks.len());
@@ -1357,6 +1357,29 @@ pub(crate) fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window
 }
 
 /// The pixel type of the decoder's current image, from `BitsPerSample` and `SampleFormat`.
+/// [`RasterData::new_filled`], or an error when the samples cannot be allocated: a header can
+/// declare an image of terabytes, whose full window would abort the process.
+fn try_new_filled(data_type: DataType, len: usize, value: f64) -> Result<RasterData> {
+    fn filled<T: Clone>(len: usize, value: T) -> Result<Vec<T>> {
+        let mut v = Vec::new();
+        v.try_reserve_exact(len).map_err(|_| Error::InvalidArgument(format!("a window of {len} samples is too large to allocate")))?;
+        v.resize(len, value);
+        Ok(v)
+    }
+    Ok(match data_type {
+        DataType::U8 => RasterData::U8(filled(len, value as u8)?),
+        DataType::I8 => RasterData::I8(filled(len, value as i8)?),
+        DataType::U16 => RasterData::U16(filled(len, value as u16)?),
+        DataType::I16 => RasterData::I16(filled(len, value as i16)?),
+        DataType::U32 => RasterData::U32(filled(len, value as u32)?),
+        DataType::I32 => RasterData::I32(filled(len, value as i32)?),
+        DataType::U64 => RasterData::U64(filled(len, value as u64)?),
+        DataType::I64 => RasterData::I64(filled(len, value as i64)?),
+        DataType::F32 => RasterData::F32(filled(len, value as f32)?),
+        DataType::F64 => RasterData::F64(filled(len, value)?),
+    })
+}
+
 fn sample_type<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<DataType> {
     let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
     let format = dec.find_tag_unsigned_vec::<u16>(Tag::SampleFormat).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
