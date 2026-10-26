@@ -1985,8 +1985,14 @@ mod tests {
         assert_eq!(c.epsg, None);
         assert_eq!(c.name().unwrap(), "WGS 84 + EGM96 height");
         assert!(c.to_wkt().unwrap().starts_with("COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\""));
-        // Its WKT is not identified as EPSG:4326, which has no heights.
-        assert_eq!(identify_epsg(&c.to_wkt().unwrap()), None);
+        // Its WKT is not identified as EPSG:4326, which has no heights, read back or identified.
+        let wkt = c.to_wkt().unwrap();
+        assert_eq!(identify_epsg(&wkt), None);
+        let read = SpatialRef::from_wkt(&wkt);
+        assert_eq!((read.epsg, read.name().as_deref()), (None, Some("WGS 84 + EGM96 height")));
+        // A compound WKT declaring its code keeps it.
+        let declared = format!("{},AUTHORITY[\"EPSG\",\"9707\"]]", wkt.strip_suffix(']').unwrap());
+        assert_eq!(SpatialRef::from_wkt(&declared).epsg, Some(9707));
         assert!(c.is_geographic());
         let k = SpatialRef::from_epsg(5498).unwrap();
         assert_eq!(k.name().unwrap(), "NAD83 + NAVD88 height");
