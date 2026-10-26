@@ -323,9 +323,9 @@ impl LazyRaster {
             Inner::Memory(_) => Vec::new(),
             Inner::Source(..) => return self.input_paths(),
         };
-        // After the file, as GDAL lists them: its `.msk`, then its `.aux.xml`.
+        // As GDAL lists them: the file, its `.ovr`, its `.msk`, then its `.aux.xml`.
         if let Some(mask) = &self.sidecar_mask {
-            let at = files.len().min(1);
+            let at = files.iter().position(|f| f.ends_with(".aux.xml")).unwrap_or(files.len());
             files.splice(at..at, mask.file_list()?);
         }
         Ok(files)
@@ -424,6 +424,11 @@ impl LazyRaster {
         }
         t.tags.warn_unreadable(path);
         t.file = file;
+        if let Location::Local(p) = &loc {
+            let mut ovr = p.as_os_str().to_owned();
+            ovr.push(".ovr");
+            t.attach_ovr(std::path::Path::new(&ovr));
+        }
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
     }
 
@@ -1048,6 +1053,9 @@ struct Level {
     height: usize,
     /// The tile or strip size.
     block: (usize, usize),
+    /// The level of the `.ovr` file (see [`TiffRaster::ovr`]) this one is, rather than an image
+    /// of this file.
+    external: Option<usize>,
 }
 
 struct TiffRaster {
@@ -1071,6 +1079,8 @@ struct TiffRaster {
     limits: TiffReadLimits,
     /// The files [`LazyRaster::file_list`] lists: the TIFF as it was named, and the sidecars read.
     files: Vec<String>,
+    /// The external overviews (`.ovr` file) of a file without internal ones.
+    ovr: Option<Box<TiffRaster>>,
 }
 
 /// What more decoders of a TIFF read: its local file, or its bytes in memory.
@@ -1097,7 +1107,7 @@ impl TiffRaster {
         let bands = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
         let data_type = sample_type(&mut dec)?;
         let (cw, ch) = dec.chunk_dimensions();
-        let mut levels = vec![Level { ifd: 0, width: w as usize, height: h as usize, block: (cw as usize, ch as usize) }];
+        let mut levels = vec![Level { ifd: 0, width: w as usize, height: h as usize, block: (cw as usize, ch as usize), external: None }];
         let mut ifd = 1;
         while dec.more_images() && ifd < MAX_IMAGES {
             // Images the decoder cannot read (such as unusual masks) are skipped.
@@ -1109,7 +1119,7 @@ impl TiffRaster {
                 if subfile & 1 == 1 && subfile & 4 == 0 && samples == bands && same_type {
                     let (ow, oh) = dec.dimensions().map_err(tiff_err)?;
                     let (cw, ch) = dec.chunk_dimensions();
-                    levels.push(Level { ifd, width: ow as usize, height: oh as usize, block: (cw as usize, ch as usize) });
+                    levels.push(Level { ifd, width: ow as usize, height: oh as usize, block: (cw as usize, ch as usize), external: None });
                 }
             }
             ifd += 1;
@@ -1134,11 +1144,44 @@ impl TiffRaster {
             file: None,
             limits,
             files: Vec::new(),
+            ovr: None,
         })
+    }
+
+    /// Takes the images of a GDAL `.ovr` file as overviews, as GDAL does when the TIFF has none
+    /// of its own, when they have the TIFF's bands and type.
+    fn attach_ovr(&mut self, path: &std::path::Path) {
+        if self.levels.len() > 1 || !path.is_file() {
+            return;
+        }
+        let Ok(file) = std::fs::File::open(path) else { return };
+        let Ok(mut ovr) = TiffRaster::new(Source::File(BufReader::new(file)), None, self.limits) else { return };
+        if ovr.bands != self.bands || ovr.data_type != self.data_type {
+            return;
+        }
+        ovr.file = Some(path.to_path_buf());
+        // Missing chunks read as the TIFF's nodata.
+        ovr.tags.nodata = self.tags.nodata;
+        let (w, h) = (self.levels[0].width, self.levels[0].height);
+        for (i, l) in ovr.levels.iter().enumerate() {
+            // Overviews smaller than the image, as GDAL takes them.
+            if l.width < w || l.height < h {
+                self.levels.push(Level { ifd: l.ifd, width: l.width, height: l.height, block: l.block, external: Some(i) });
+            }
+        }
+        self.levels[1..].sort_by_key(|l| std::cmp::Reverse((l.width, l.height)));
+        // Listed after the TIFF, as GDAL lists it.
+        self.files.insert(self.files.len().min(1), path.to_string_lossy().into_owned());
+        self.ovr = Some(Box::new(ovr));
     }
 
     /// Reads a window of some bands (numbered from 1) of a level, band-major.
     fn read(&mut self, level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
+        if let Some(i) = self.levels[level].external
+            && let Some(ovr) = self.ovr.as_mut()
+        {
+            return ovr.read(i, w, bands);
+        }
         let len = bands
             .len()
             .checked_mul(w.width)
