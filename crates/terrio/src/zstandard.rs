@@ -4,9 +4,12 @@
 
 use std::io::{Error, ErrorKind, Read, Result};
 
+// `decompress` reads EPT tiles (the `pointcloud` feature).
 #[cfg(all(feature = "libzstd", not(target_family = "wasm")))]
+#[cfg_attr(not(feature = "pointcloud"), allow(unused_imports))]
 pub(crate) use libzstd::{compress, decompress};
 #[cfg(not(all(feature = "libzstd", not(target_family = "wasm"))))]
+#[cfg_attr(not(feature = "pointcloud"), allow(unused_imports))]
 pub(crate) use pure::{compress, decompress};
 
 /// The error of a stream decompressing to more than `limit` bytes.
