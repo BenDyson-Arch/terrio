@@ -87,8 +87,9 @@ pub struct WindowOptions {
 /// window a read returns is not bounded by it: check the window's size before reading it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TiffReadLimits {
-    /// The most bytes one decoded chunk may take. The `tiff` crate (0.11) bounds the size of tag
-    /// values, such as the chunk offsets, by the same limit.
+    /// The most bytes one decoded chunk may take, whichever codec decodes it, and the most a
+    /// LERC chunk's Deflate or Zstandard stream may inflate to. The `tiff` crate (0.11) bounds
+    /// the size of tag values, such as the chunk offsets, by the same limit.
     pub chunk_bytes: usize,
 }
 
@@ -1167,7 +1168,7 @@ impl TiffRaster {
             }
         });
         let reopen = reopen.as_ref().map(|f| f as crate::geotiff::Reopen<PatchedReader<Source>>);
-        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, &tiff_err, |(idx, chunk, (dw, dh))| {
+        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, limits, &tiff_err, |(idx, chunk, (dw, dh))| {
             let targets = &targets[&idx];
             macro_rules! place {
                 ($($out:ident <- $res:ident),*) => {

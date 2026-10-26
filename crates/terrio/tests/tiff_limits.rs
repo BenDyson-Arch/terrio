@@ -7,12 +7,17 @@ use terrio::{LazyRaster, TiffReadLimits, Window, WindowOptions};
 /// A one-band Float64 TIFF of `width` x `height` pixels in one uncompressed strip of `stored`
 /// bytes (zeros) declaring `declared` bytes, little-endian, classic or BigTIFF.
 fn tiff(width: u32, height: u32, declared: u32, stored: usize, big: bool) -> Vec<u8> {
+    compressed_tiff(1, width, height, declared, stored, big)
+}
+
+/// [`tiff`] with the strip's `Compression` tag.
+fn compressed_tiff(compression: u32, width: u32, height: u32, declared: u32, stored: usize, big: bool) -> Vec<u8> {
     // (tag, type, value): SHORT 3, LONG 4.
     let entries: [(u16, u16, u32); 9] = [
         (256, 4, width),
         (257, 4, height),
         (258, 3, 64),
-        (259, 3, 1),
+        (259, 3, compression),
         (262, 3, 1),
         (273, 4, 0), // StripOffsets, set below
         (278, 4, height),
@@ -74,6 +79,30 @@ fn a_huge_declared_strip_is_an_error() {
         assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: l, .. } if l == limit), "{e}");
         assert!(e.to_string().contains(&limit.to_string()), "{e}");
     }
+}
+
+#[test]
+fn chunks_of_terrios_own_codecs_have_the_limit_too() {
+    // The same strip with LZW, which terrio decodes rather than the `tiff` crate: refused before
+    // its bytes are read, with the limit set.
+    let bytes = compressed_tiff(5, 1_000_000, 1_000_000, 128, 128, false);
+    let mut r = LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+    let e = r.read_window(Window::new(0, 0, 4, 4), &band1()).unwrap_err();
+    let limit = TiffReadLimits::default().chunk_bytes;
+    assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: l, .. } if l == limit), "{e}");
+    // A valid 4 x 4 LZW strip reads at its own size as the limit.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("lzw.tif");
+    let file = std::fs::File::create(&path).unwrap();
+    let mut encoder = tiff::encoder::TiffEncoder::new(file).unwrap().with_compression(tiff::encoder::Compression::Lzw);
+    encoder.write_image::<tiff::encoder::colortype::Gray64Float>(4, 4, &[1.5; 16]).unwrap();
+    drop(encoder);
+    let read = |chunk_bytes| {
+        let mut r = LazyRaster::open_tiff_with_limits(path.to_str().unwrap(), TiffReadLimits { chunk_bytes }).unwrap().unwrap();
+        r.read_window(Window::full(4, 4), &band1()).map(|ds| ds.raster.data.get_f64(0))
+    };
+    assert_eq!(read(128).unwrap(), 1.5);
+    assert!(matches!(read(127), Err(terrio::Error::DecodedLimitExceeded { limit: 127, .. })));
 }
 
 #[test]

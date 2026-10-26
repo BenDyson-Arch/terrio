@@ -587,11 +587,12 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek>(
     reopen: Option<Reopen<D>>,
     ifd: usize,
     chunks: &[u32],
+    limits: crate::cog::TiffReadLimits,
     err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
     mut place: impl FnMut(DecodedChunk) -> crate::Result<()>,
 ) -> crate::Result<()> {
-    // The compressions the `tiff` crate does not decode (alone).
-    let codec = crate::tiff_codecs::ChunkCodec::new(dec).map_err(err)?;
+    // The compressions the `tiff` crate does not decode (alone), with the same limit.
+    let codec = crate::tiff_codecs::ChunkCodec::new(dec, limits.chunk_bytes).map_err(err)?;
     let codec = codec.as_ref();
     // Chunks `..first` were decoded by other threads.
     #[cfg(threads)]
@@ -752,7 +753,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     // Band-major output, typed after the first chunk decoded.
     let mut data: Option<RasterData> = None;
     let reopen = || open_decoder(path, &tags, limits);
-    decode_chunks(&mut dec, Some(&reopen), 0, &chunks, &tiff_err, |(idx, chunk, (dw, dh))| {
+    decode_chunks(&mut dec, Some(&reopen), 0, &chunks, limits, &tiff_err, |(idx, chunk, (dw, dh))| {
         let idx = idx as usize;
         let (plane, rest) = (idx / per_plane, idx % per_plane);
         let geom = ChunkGeom { x0: (rest % across) * cw, y0: (rest / across) * ch, dw, dh, spp };
