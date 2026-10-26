@@ -1072,8 +1072,17 @@ impl EptAppender {
             }
             (_, EptDataType::Zstandard) => {
                 // At most the records of the node's points in the hierarchy.
-                let points = self.hierarchy.get(&key).copied().unwrap_or(0);
-                let limit = usize::try_from(points).ok().and_then(|n| n.checked_mul(self.rl)).unwrap_or(usize::MAX);
+                // All callers select a positive-count hierarchy entry. Refuse an
+                // inconsistent dataset explicitly instead of inventing a zero limit.
+                let points = self
+                    .hierarchy
+                    .get(&key)
+                    .copied()
+                    .ok_or_else(|| Error::InvalidData(format!("EPT: tile {} is missing from the hierarchy", key_name(key))))?;
+                let limit = usize::try_from(points)
+                    .ok()
+                    .and_then(|n| n.checked_mul(self.rl))
+                    .ok_or_else(|| Error::InvalidData(format!("EPT: tile {} hierarchy record size overflows", key_name(key))))?;
                 crate::zstandard::decompress(&bytes, limit).map_err(|e| Error::InvalidData(format!("EPT tile {}: {e}", key_name(key))))?
             }
             _ => bytes,

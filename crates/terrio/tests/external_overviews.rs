@@ -59,3 +59,86 @@ fn an_ovr_of_another_type_is_ignored() {
     std::fs::rename(&ovr, dir.path().join("img.tif.ovr")).unwrap();
     assert!(terrio::open_raster_lazy(tif.to_str().unwrap()).unwrap().overviews().is_empty());
 }
+
+#[test]
+fn external_overview_dimensions_follow_gdal_acceptance() {
+    // GDAL 3.12.2: no aspect-ratio, reduction-factor or smaller-than-base gate.
+    for (width, height) in [(30, 10), (150, 40), (100, 80), (200, 160)] {
+        let dir = tempfile::tempdir().unwrap();
+        let tif = dir.path().join("img.tif");
+        write(&tif, 100, 80, |_| 1, Vec::new());
+        write(&dir.path().join("ovr.tif"), width, height, |_| 7, Vec::new());
+        std::fs::rename(dir.path().join("ovr.tif"), dir.path().join("img.tif.ovr")).unwrap();
+        let r = terrio::open_raster_lazy(tif.to_str().unwrap()).unwrap();
+        assert_eq!(r.overviews(), [(width, height)]);
+        assert_eq!(overview(&tif, Window::new(0, 0, 2, 1)), [7.0, 7.0]);
+    }
+}
+
+#[test]
+fn external_overviews_keep_their_nodata_and_internal_mask() {
+    // GDAL 3.12.2: GetOverview(0) reports its own nodata and per-dataset mask.
+    let dir = tempfile::tempdir().unwrap();
+    let tif = dir.path().join("img.tif");
+    write(&tif, 8, 6, |_| 9, Vec::new());
+    let cfg = RasterConfig { cols: 4, rows: 3, bands: 1, data_type: DataType::U8, nodata: 7.0, ..Default::default() };
+    let raster = terrio::Raster::from_data_native(cfg, RasterData::U8(vec![7; 12])).unwrap();
+    let mask: Vec<u8> = (0..12).map(|i| if i % 3 == 0 { 0 } else { 255 }).collect();
+    let ovr = dir.path().join("ovr.tif");
+    terrio::write_raster_dataset(
+        &RasterDataset::new(raster, true),
+        ovr.to_str().unwrap(),
+        &RasterWriteOptions { mask: Some(mask.clone()), ..Default::default() },
+    )
+    .unwrap();
+    std::fs::rename(&ovr, dir.path().join("img.tif.ovr")).unwrap();
+    let mut r = terrio::open_raster_lazy(tif.to_str().unwrap()).unwrap();
+    assert_eq!(r.nodata(), None);
+    let window = Window::full(4, 3);
+    let data = r.read_window(window, &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+    assert_eq!(data.nodata(), Some(7.0));
+    assert_eq!(r.read_mask(window, Some(0)).unwrap(), Some(mask));
+    assert!(r.read_mask(Window::full(8, 6), None).unwrap().is_none());
+}
+
+#[test]
+fn external_mask_policy_is_independent_of_the_base_tiff() {
+    // GDAL 3.12.2: an unmasked external overview is all-valid even when
+    // the base has an internal mask. An `.ovr.msk` applies to the overview.
+    let dir = tempfile::tempdir().unwrap();
+    let tif = dir.path().join("img.tif");
+    let cfg = RasterConfig { cols: 8, rows: 6, bands: 1, data_type: DataType::U8, ..Default::default() };
+    let raster = terrio::Raster::from_data_native(cfg, RasterData::U8(vec![1; 48])).unwrap();
+    terrio::write_raster_dataset(
+        &RasterDataset::new(raster, false),
+        tif.to_str().unwrap(),
+        &RasterWriteOptions { mask: Some(vec![0; 48]), ..Default::default() },
+    )
+    .unwrap();
+    write(&dir.path().join("ovr.tif"), 4, 3, |_| 1, Vec::new());
+    std::fs::rename(dir.path().join("ovr.tif"), dir.path().join("img.tif.ovr")).unwrap();
+    let mut r = terrio::open_raster_lazy(tif.to_str().unwrap()).unwrap();
+    assert_eq!(r.read_mask(Window::full(8, 6), None).unwrap(), Some(vec![0; 48]));
+    assert!(r.read_mask(Window::full(4, 3), Some(0)).unwrap().is_none());
+    let mask = dir.path().join("mask.tif");
+    let cfg = RasterConfig {
+        cols: 4,
+        rows: 3,
+        bands: 1,
+        data_type: DataType::U8,
+        metadata: vec![("INTERNAL_MASK_FLAGS_1".into(), "2".into())],
+        ..Default::default()
+    };
+    let values: Vec<u8> = (0..12).map(|i| if i % 3 == 0 { 0 } else { 255 }).collect();
+    let raster = terrio::Raster::from_data_native(cfg, RasterData::U8(values)).unwrap();
+    terrio::write_raster_dataset(&RasterDataset::new(raster, false), mask.to_str().unwrap(), &RasterWriteOptions::default()).unwrap();
+    std::fs::rename(mask, dir.path().join("img.tif.ovr.msk")).unwrap();
+    let mut r = terrio::open_raster_lazy(tif.to_str().unwrap()).unwrap();
+    let expected: Vec<u8> = (0..12).map(|i| if i % 3 == 0 { 0 } else { 255 }).collect();
+    assert_eq!(r.read_mask(Window::full(4, 3), Some(0)).unwrap(), Some(expected));
+    assert_eq!(r.read_mask(Window::full(8, 6), None).unwrap(), Some(vec![0; 48]));
+    assert_eq!(
+        r.file_list().unwrap(),
+        ["img.tif", "img.tif.ovr", "img.tif.ovr.msk"].map(|name| dir.path().join(name).to_string_lossy().into_owned())
+    );
+}

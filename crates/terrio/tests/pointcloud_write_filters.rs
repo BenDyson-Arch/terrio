@@ -712,3 +712,33 @@ fn ept_appends_interrupted_are_completed_or_discarded() {
     assert!(!done.exists() && !partial.exists());
     assert_eq!(pointcloud::read_points(path.to_str().unwrap(), &Default::default()).unwrap().len(), 10_000);
 }
+
+#[test]
+fn ept_zstandard_underreported_hierarchy_is_refused_before_append() {
+    let points = cloud(64, 31);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("set/ept.json");
+    let bounds = points.bounds().unwrap();
+    let options = PointWriteOptions {
+        ept_data_type: EptDataType::Zstandard,
+        copc_leaf_points: Some(1000),
+        ept_bounds: Some(bounds),
+        ..Default::default()
+    };
+    pointcloud::write_points(&points.slice(0, 32), path.to_str().unwrap(), &options).unwrap();
+    let hierarchy_path = path.with_file_name("ept-hierarchy").join("0-0-0-0.json");
+    let mut hierarchy: serde_json::Value = serde_json::from_slice(&std::fs::read(&hierarchy_path).unwrap()).unwrap();
+    hierarchy["0-0-0-0"] = serde_json::json!(1);
+    std::fs::write(&hierarchy_path, serde_json::to_vec(&hierarchy).unwrap()).unwrap();
+    let tile = path.with_file_name("ept-data").join("0-0-0-0.zst");
+    let before = std::fs::read(&tile).unwrap();
+    let error = pointcloud::EptAppender::open(path.to_str().unwrap(), &options)
+        .and_then(|mut appender| {
+            appender.start_source("more.las", &points)?;
+            appender.write(&points.slice(32, 64))?;
+            appender.finish()
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("decompresses to more than"), "{error}");
+    assert_eq!(std::fs::read(tile).unwrap(), before);
+}

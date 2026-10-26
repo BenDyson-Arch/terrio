@@ -31,7 +31,7 @@ mod libzstd {
     #[cfg_attr(not(feature = "pointcloud"), allow(dead_code))]
     pub(crate) fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
         let mut out = Vec::new();
-        zstd::stream::read::Decoder::with_buffer(data)?.take(limit as u64 + 1).read_to_end(&mut out)?;
+        zstd::stream::read::Decoder::with_buffer(data)?.take((limit as u64).saturating_add(1)).read_to_end(&mut out)?;
         if out.len() > limit {
             return Err(too_long(limit));
         }
@@ -111,6 +111,14 @@ mod tests {
         // A truncated skippable frame is an error.
         let cut = [pure::compress(&a, 3).unwrap(), skippable(9)[..12].to_vec()].concat();
         assert!(pure::decompress(&cut, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn unlimited_output_limit_does_not_overflow() {
+        let input = b"a finite frame with an unlimited caller policy";
+        let compressed = pure::compress(input, 1).unwrap();
+        assert_eq!(decompress(&compressed, usize::MAX).unwrap(), input);
+        assert_eq!(pure::decompress(&compressed, usize::MAX).unwrap(), input);
     }
 
     #[test]
