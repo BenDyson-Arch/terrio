@@ -516,8 +516,9 @@ and that a root authority ID cannot overwrite a caller's false easting.
 
 PROJJSON export (`SpatialRef::to_projjson`) has unit tests of each kind of CRS and refusal
 (`cargo test -p terrio-crs --test projjson_export`); `--only projjson-export` compares it with
-live PROJ's PROJJSON of 45 CRSs by meaning and has GDAL read those and every IAU_2015 CRS, whose
-coordinates must match the originals' (`scripts/compare_projjson_export_with_gdal.py`).
+live PROJ's PROJJSON of 52 CRSs by meaning and has GDAL read those and every IAU_2015 CRS, whose
+coordinates must match the originals' (`scripts/compare_projjson_export_with_gdal.py`); a case
+with no point both CRSs transform is reported as `not compared`.
 
 
 ## IAU_2015 authority support (#271)

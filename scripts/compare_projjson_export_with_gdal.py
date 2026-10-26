@@ -3,9 +3,11 @@
 
 52 CRSs are compared with PROJ's PROJJSON by meaning (types, identifiers, datums, ellipsoids,
 prime meridians, axes, methods and parameters by EPSG code in SI units) and read by GDAL, whose
-transformation of a point must match the original CRS's within 1e-8 degrees. Every IAU_2015 CRS is
-exported and read by GDAL the same way, reported per body; the only refusals allowed there are
-projections without an EPSG method and projections on an auxiliary sphere of an ellipsoid.
+transformation of points (through each CRS's geographic CRS, a vertical CRS paired with WGS 84,
+no grids) must match the original's within 1e-8 degrees and 1 mm; with no point both transform,
+a case is `not compared`. Every IAU_2015 CRS is exported and read by GDAL the same way, reported
+per body; the only refusals allowed there are projections without an EPSG method and projections
+on an auxiliary sphere of an ellipsoid.
 """
 import argparse
 import json
@@ -73,6 +75,13 @@ def si(v, default):
     return v['value'] * factor(v.get('unit')) if isinstance(v, dict) else v * default
 
 
+def datum_name(d):
+    """A datum's name, normalized: case, GDAL's underscores, PROJ's names of unnamed datums and
+    the WGS 84 and ETRS89 ensembles (written as their datum, as documented)."""
+    name = d.get('name', 'unknown').lower().replace('_', ' ').removesuffix(' ensemble')
+    return 'unknown' if name.startswith('unknown based on') else name
+
+
 def canonical(v):
     """What the comparison looks at (as PROJ and terrio may name and identify inner objects)."""
     out = {'type': v.get('type'), 'name': None if 'id' in v else v.get('name'), 'id': v.get('id', {}).get('code')}
@@ -82,7 +91,7 @@ def canonical(v):
         a = si(e['semi_major_axis'] if 'semi_major_axis' in e else e['radius'], 1)
         rf = e.get('inverse_flattening') or (a / (a - si(e['semi_minor_axis'], 1)) if 'semi_minor_axis' in e else 0.0)
         pm = si(d['prime_meridian']['longitude'], DEG) if 'prime_meridian' in d else 0.0
-        out['datum'] = [round(a, 3), round(rf, 6), round(pm, 11)]
+        out['datum'] = [datum_name(d), round(a, 3), round(rf, 6), round(pm, 11)]
     if 'coordinate_system' in v:
         axes = [[a['direction'], round(factor(a.get('unit')), 15)] for a in v['coordinate_system']['axis']]
         if any('meridian' in a for a in v['coordinate_system']['axis']):  # polar CSs: east and north in terrio
@@ -107,14 +116,18 @@ def export(definitions):
         cases, report = Path(tmp) / 'cases.txt', Path(tmp) / 'report.jsonl'
         cases.write_text('\n'.join(definitions) + '\n')
         env = dict(os.environ, TERRIO_PROJJSON_EXPORT_CASES=str(cases), TERRIO_PROJJSON_EXPORT_REPORT=str(report))
-        subprocess.run(['cargo', 'test', '-q', '--release', '-p', 'terrio-crs', '--test', 'projjson_export', 'export_report'],
-                       cwd=ROOT, env=env, check=True, capture_output=True)
+        run = subprocess.run(['cargo', 'test', '-q', '--release', '-p', 'terrio-crs', '--test', 'projjson_export', 'export_report'],
+                             cwd=ROOT, env=env, capture_output=True, text=True)
+        if run.returncode:
+            raise RuntimeError(f'cargo test failed:\n{run.stdout[-2000:]}\n{run.stderr[-2000:]}')
         return {r['definition']: r for r in map(json.loads, report.read_text().splitlines())}
 
 
 def difference(ours, original, base, points):
-    """The largest difference, in degrees of `base`, between transforming the first point (of
-    `points`, in `base`) that is in the CRSs' domain from `ours` and from `original`."""
+    """The largest differences, in degrees of `base` and in metres of height, between transforming
+    the `points` (in `base`) that are in the CRSs' domain from `ours` and from `original`; `None`
+    when none is."""
+    found = None
     for p in points:
         try:
             q = osr.CoordinateTransformation(base, original).TransformPoint(*p, 0.0)
@@ -122,12 +135,17 @@ def difference(ours, original, base, points):
             b = osr.CoordinateTransformation(ours, base).TransformPoint(*q)
         except RuntimeError:
             continue
-        return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
-    return None
+        d = (max(abs(a[0] - b[0]), abs(a[1] - b[1])), abs(a[2] - b[2]))
+        found = d if found is None else (max(found[0], d[0]), max(found[1], d[1]))
+    return found
 
 
 def status(d):
-    return 'identical' if d == 0 else 'within tolerance' if d <= 1e-8 else 'differs'
+    """The status of `difference()`'s result: within 1e-8 degrees and 1 mm; `not compared` when
+    no point is in both CRSs' domains."""
+    if d is None:
+        return 'not compared'
+    return 'identical' if d == (0, 0) else 'within tolerance' if d[0] <= 1e-8 and d[1] <= 1e-3 else 'differs'
 
 
 def main():
@@ -140,7 +158,6 @@ def main():
         iau = [f'IAU_2015:{c}' for (c,) in db.execute("SELECT code FROM crs_view WHERE auth_name = 'IAU_2015' ORDER BY CAST(code AS INTEGER)")]
     ours = export(DEFINITIONS + REFUSED + iau)
     results = []
-    wgs84 = srs('EPSG:4326')
     for definition in DEFINITIONS:
         r = ours[definition]
         try:
@@ -150,10 +167,24 @@ def main():
             if canonical(r['projjson']) != canonical(proj):
                 raise ValueError(f"PROJ {canonical(proj)}\nterrio {canonical(r['projjson'])}")
             original, back = srs(definition), srs(json.dumps(r['projjson']))
+            if original.IsVertical() and not original.IsCompound():
+                # No coordinates of its own: both paired with WGS 84, heights through EPSG:4979.
+                wgs84 = srs('EPSG:4326')
+                pair = []
+                for vertical in (original, back):
+                    c = osr.SpatialReference()
+                    c.SetCompoundCS('WGS 84 + vertical', wgs84, vertical)
+                    c.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                    pair.append(c)
+                original, back = pair[0], pair[1]
             area = original.GetAreaOfUse()
             point = ((area.west_lon_degree + area.east_lon_degree) / 2, (area.south_lat_degree + area.north_lat_degree) / 2) if area else (10.0, 50.0)
-            d = difference(back, original, wgs84, [point, (10.0, 50.0)]) if original.IsProjected() or original.IsGeographic() else 0.0
-            results.append(dict(group='CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status=status(d), detail=f'{d:.3g} degrees' if d else ''))
+            # Through the CRS's own geographic CRS (geocentric, compound and bound CRSs too).
+            base = original.CloneGeogCS()
+            base.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            d = difference(back, original, base, [point, (10.0, 50.0)])
+            detail = 'no point both CRSs transform' if d is None else f'{d[0]:.3g} degrees, {d[1]:.3g} m' if d != (0, 0) else ''
+            results.append(dict(group='CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status=status(d), detail=detail))
         except Exception as error:
             results.append(dict(group='CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status='differs', detail=str(error)))
     for definition in REFUSED:
@@ -161,7 +192,7 @@ def main():
         ok = 'error' in r
         results.append(dict(group='Refused (would be described wrongly)', name=definition, status='identical' if ok else 'differs',
                             detail=r['error'] if ok else 'written'))
-    bodies = defaultdict(lambda: dict(written=0, refused=0, worst=0.0, bad=[]))
+    bodies = defaultdict(lambda: dict(written=0, refused=0, worst=0.0, bad=[], unchecked=[]))
     points = [(10, 20), (0, 85), (0, -85), (90, 60), (-90, -60), (180, 0), (45, 45)]
     for code in iau:
         body = bodies[int(code.split(':')[1]) // 100]
@@ -174,13 +205,16 @@ def main():
         body['written'] += 1
         base = srs(f"IAU_2015:{int(code.split(':')[1]) // 100 * 100}")
         d = difference(srs(json.dumps(r['projjson'])), srs(code), base, points)
-        if d is None or d > 1e-8:
+        if d is None:
+            body['unchecked'].append(code)
+        elif status(d) == 'differs':
             body['bad'].append(f'{code}: {d}')
-        body['worst'] = max(body['worst'], d or 0.0)
+        body['worst'] = max(body['worst'], d[0] if d else 0.0)
     for n, b in sorted(bodies.items()):
         name = f'IAU_2015:{n * 100}..: {b["written"]} written, {b["refused"]} refused'
-        results.append(dict(group='IAU_2015 (GDAL by coordinates)', name=name, status='differs' if b['bad'] else status(b['worst']),
-                            detail='; '.join(b['bad'][:3]) or (f'{b["worst"]:.3g} degrees' if b['worst'] else '')))
+        state = 'differs' if b['bad'] else 'not compared' if b['unchecked'] else status((b['worst'], 0))
+        detail = '; '.join(b['bad'][:3]) or (f"no point both transform: {', '.join(b['unchecked'][:3])}" if b['unchecked'] else '')
+        results.append(dict(group='IAU_2015 (GDAL by coordinates)', name=name, status=state, detail=detail or (f'{b["worst"]:.3g} degrees' if b['worst'] else '')))
     print(json.dumps(results, indent=2) if args.json else '\n'.join(f'{r["name"]}: {r["status"]} {r["detail"]}' for r in results))
     return int(any(r['status'] == 'differs' for r in results))
 
