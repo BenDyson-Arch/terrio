@@ -821,6 +821,14 @@ fn ssfn(phit: f64, sinphi: f64, e: f64) -> f64 {
 
 impl Stere {
     fn new(s: &mut Setup<'_>) -> Self {
+        // At a pole, `lat_ts` gives the hemisphere, as PROJ reads such a CRS (Polar Stereographic
+        // (variant B), whose standard parallel's sign is the pole's); a bare `stere` operation
+        // would take `lat_0`'s.
+        if let Some(ts) = s.p.angle("lat_ts")
+            && (s.phi0.abs() - HALFPI).abs() < 1e-10
+        {
+            s.phi0 = if ts < 0.0 { -HALFPI } else { HALFPI };
+        }
         let phits = s.p.angle("lat_ts").unwrap_or(HALFPI).abs();
         let mode = azimuthal_mode(s.phi0);
         let (e, es, k0, phi0) = (s.ell.e, s.ell.es, s.k0, s.phi0);

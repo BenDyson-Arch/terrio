@@ -926,6 +926,10 @@ PROJ_CASES = {
             "Winkel Tripel: omitted lat_1 equals explicit zero (CRS semantics)", TOLERANCE,
             "omitted and explicit-zero CRS parallel give equal coordinates",
         ),
+        "polar_stereographic_hemisphere_follows_lat_ts_in_a_crs": (
+            "Polar stereographic: the pole is on lat_ts's side (CRS semantics), PROJ string and WKT", TOLERANCE,
+            "within 1e-9 degrees of GDAL 3.13.3 / PROJ 9.9.0",
+        ),
         "orthographic_roundtrips_across_origins_scales_and_rotations": (
             "Orthographic: round trips across origins, figures, scales and azimuths", TOLERANCE,
             "round trip <1e-5 degrees at the ill-conditioned limb",

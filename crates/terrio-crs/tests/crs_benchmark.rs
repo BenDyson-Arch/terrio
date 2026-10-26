@@ -132,6 +132,27 @@ fn winkel_tripel_omitted_parallel_preserves_crs_default() {
 }
 
 #[test]
+fn polar_stereographic_hemisphere_follows_lat_ts_in_a_crs() {
+    // GDAL 3.13.3 / PROJ 9.9.0 read a polar `stere` with `lat_ts` as Polar Stereographic
+    // (variant B): the pole is on `lat_ts`'s side (north for 0), whatever `lat_0`'s sign (a bare
+    // `stere` operation takes `lat_0`'s).
+    let geo = SpatialRef::from_proj4("+proj=longlat +datum=WGS84").unwrap();
+    for (definition, (lon, lat)) in [
+        ("+proj=stere +lat_0=-90 +lat_ts=90 +datum=WGS84", (153.434948822922, 87.998236137629)),
+        ("+proj=stere +lat_0=90 +lat_ts=-70 +datum=WGS84", (26.565051177078, -87.936036886833)),
+        ("+proj=stere +lat_0=-90 +lat_ts=0 +datum=WGS84", (153.434948822922, 86.011022737183)),
+        ("+proj=stere +lat_0=-90 +lat_ts=-70 +datum=WGS84", (26.565051177078, -87.936036886833)),
+    ] {
+        let projected = SpatialRef::from_proj4(definition).unwrap();
+        let written = SpatialRef::from_wkt(&projected.to_wkt().unwrap());
+        for crs in [projected, written] {
+            let (lo, la) = Transformer::new(&crs, &geo).unwrap().transform(100_000.0, 200_000.0).unwrap();
+            assert!((lo - lon).abs() < 1e-9 && (la - lat).abs() < 1e-9, "{definition}: ({lo}, {la})");
+        }
+    }
+}
+
+#[test]
 fn orthographic_roundtrips_across_origins_scales_and_rotations() {
     for figure in ["+R=6371000", "+ellps=WGS84", "+ellps=GRS80"] {
         let geo = SpatialRef::from_proj4(&format!("+proj=longlat {figure}")).unwrap();
