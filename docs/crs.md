@@ -478,6 +478,99 @@ Geocentric and 3D CRSs remain available through EPSG, PROJ and WKT definitions.
 This prevents silent loss of datum, axis, unit or operation information.
 
 
+## IAU planetary coordinate systems
+
+The shared pure-Rust engine includes the **IAU_2015** registry from PROJ 9.8.1,
+with source Git blob `900564ccf2e1f77fb708ddc2c8544843b29bc24a`. Its 2,201 definitions
+comprise 115 geographic CRSs (including spheres), 12 ellipsoidal planetocentric
+geographic CRSs and 2,074 projected CRSs. The source is PROJ's
+[`data/sql/iau.sql`](https://github.com/OSGeo/PROJ/blob/9.8.1/data/sql/iau.sql), based
+on the [IAU Working Group's 2015 report](https://doi.org/10.1007/s10569-017-9805-5).
+The embedded table is about 50 KB compressed; GDAL is used for validation and is
+not a runtime dependency. See `NOTICE` and `scripts/gen_iau_table.py`.
+
+Supported references include:
+
+- `IAU_2015:49900` or `IAU:49900` (the latter defaults to this pinned registry);
+- `IAU:2015:49900`;
+- `urn:ogc:def:crs:IAU:2015:49900`;
+- `urn:ogc:def:crs:IAU_2015::49900`;
+- `https://www.opengis.net/def/crs/IAU/2015/49900`.
+
+Unknown codes and other registry years are errors; `IAU:0:49900` is not a
+latest-version alias. Both Rust crates expose `SpatialRef::from_iau(code)`. Authority
+reporting uses `("IAU_2015", code)` and does not assign an EPSG code. Python
+`rio.CRS.to_authority()` and JavaScript `describeCrs(...).authority` retain this
+versioned identity. Stored WKT2 preserves the IAU version and the geographic
+coordinate-system type. Python `rio.CRS.to_wkt()` returns this stored WKT when
+called without an explicit format-conversion request.
+
+```sh
+terrio crs IAU_2015:49900 --to IAU_2015:49910 137.4 -4.6
+```
+
+```python
+x, y = terrio.transform_points([137.4], [-4.6], "IAU_2015:49900", "IAU_2015:49910")
+```
+
+```js
+const [x, y] = terrio.transformPoints([137.4], [-4.6], "IAU_2015:49900", "IAU_2015:49910");
+```
+
+Coordinates follow GDAL's traditional GIS order, including its planetary axis
+conventions. For example, Mars `49900` uses east-positive longitude then
+latitude. Mars `49901` uses **latitude then west-positive longitude**; its
+projected `49911` uses westing then northing. Planetocentric `49902` uses
+longitude then planetocentric latitude. The engine converts between
+planetocentric and ellipsoidal geodetic latitude, so these two latitude types
+are not interchangeable on an ellipsoid. Spherical and ellipsoidal projected
+coordinates retain their declared units, offsets and axes. Mercator (Spherical)
+on an ellipsoid uses the conformal-sphere radius (`+R_C`). PROJ 9.8.1
+initializes this radius before reading `lat_0`, so it remains the equatorial
+radius even when that latitude parameter is nonzero; Terrio follows this
+reference behavior. Geographic and geocentric `+R_C` endpoints also use this
+auxiliary sphere for runtime conversion. Their WKT retains the original
+ellipsoid and a PROJ4 extension preserves the radius modifier on reopening.
+
+CRSs on different known celestial bodies cannot be transformed into each other.
+The PROJ-compatible Earth-radius heuristic treats an undeclared figure as Earth
+when its semi-major axis is within 0.7% of 6,375,000 m. This is a radius
+heuristic, not proof of body identity: use an explicit IAU body identifier for a
+non-Earth figure, even if it has an Earth-like radius. Explicit body identities
+take precedence over the heuristic. When a body identity remains unknown, semi-major axes must agree within 0.7% of the target's
+axis. This is a compatibility change: custom CRS pairs with different small or
+planetary radii that previously passed through as an unshifted datum now fail
+when their axes exceed that allowance (for example, unit spheres of radii 1 and
+2). Use IAU authority references to retain explicit non-Earth body identities. Earth datum operations
+are rejected for planetary coordinates. There is no implicit Earth-frame bridge
+and no `PROJ_IGNORE_CELESTIAL_BODY` bypass. Planetary datum shifts and time-varying
+body orientation models are outside this registry's static 2D scope.
+
+Validation compares all 2,074 projected CRS pairs (4,148 points) against frozen
+and live GDAL 3.12.2 / PROJ 9.8.1, with component allowances of **1 mm projected**
+and **1e-8 degrees inverse**, plus separate unit/offset cases. The original Mars
+benchmark retains its distinct frozen PROJ 9.9.0 oracle. Nonzero differences are
+reported as within tolerance. Projection domain and numerical limits still
+apply: the reference itself refuses five inverse samples and has a worst
+3.8343-degree round-trip residual for the highly flattened Eros transverse
+Mercator definition `IAU_2015:200043361`. Agreement with these reference outputs
+carries those limits; it is not a guarantee of accurate inverse recovery for
+arbitrary extreme flattening. Reference refusals are recorded separately, and
+native inverse refusal or accurate recovery of the original point is accepted.
+The PROJJSON reader's existing object subset remains unchanged; use authority
+strings or WKT2 for spherical-CS planetocentric definitions.
+
+IAU datum identities are distinct from EPSG datums. Conversions within one registered
+IAU datum (including planetographic/planetocentric latitude conversions) remain
+available with `ALLOW_BALLPARK=NO`. Changes between different IAU datums, or from a
+registered datum to an unidentified custom planetary datum, require the default
+ballpark policy; strict mode rejects them. Editing a registered WKT datum does not
+retain the original datum identity merely because the outer CRS identifier remains.
+
+IAU authority reporting checks the stored definition against the registered CRS.
+Editing parameters while retaining a root IAU identifier does not preserve that
+registry identity or make the edited CRS equivalent to the original.
+
 ## Perspective projections
 
 `+proj=nsper` (near-sided perspective) and `+proj=tpers` (tilted perspective)

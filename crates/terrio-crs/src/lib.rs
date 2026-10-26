@@ -1,7 +1,8 @@
 //! Coordinate reference systems and transformations between them.
 //!
-//! Coordinates are always in traditional GIS order: x/easting/longitude first, then
-//! y/northing/latitude, whatever axis order the CRS's authority defines.
+//! Coordinates follow GDAL's traditional GIS order. East/north geographic axes are
+//! normalized to longitude/latitude; west-positive planetary systems retain their
+//! declared axis order and directions.
 //!
 //! ```no_run
 //! use terrio_crs::{SpatialRef, Transformer};
@@ -50,6 +51,7 @@ mod datum;
 mod def;
 mod epsg;
 mod grid;
+mod iau;
 mod math;
 mod params;
 mod projections;
@@ -273,7 +275,7 @@ impl SpatialRef {
             }
             return s;
         }
-        let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
+        let epsg = identify_epsg(wkt);
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
 
@@ -329,6 +331,16 @@ impl SpatialRef {
         Ok(Self { wkt: proj_to_wkt(proj4), proj4: Some(proj4.to_string()), ..Default::default() })
     }
 
+    /// A geographic or projected CRS of the IAU_2015 registry (PROJ 9.8.1).
+    pub fn from_iau(code: u32) -> Result<Self> {
+        let entry = iau::get(code).ok_or_else(|| Error::Crs(format!("unknown IAU_2015 code {code}")))?;
+        let definition = Def::from_proj(&entry.proj)?;
+        if definition.is_geographic() != entry.geographic {
+            return Err(Error::Crs("IAU definition has an unsupported coordinate system".into()));
+        }
+        Ok(Self { proj4: Some(entry.proj.clone()), wkt: Some(entry.wkt.clone()), ..Default::default() })
+    }
+
     /// Parses the supported PROJJSON v0.7 geographic, projected or bound CRS subset.
     /// Unsupported coordinate systems, datum models and operations return errors.
     pub fn from_projjson(text: &str) -> Result<Self> {
@@ -354,6 +366,9 @@ impl SpatialRef {
         }
         if s.starts_with('{') {
             return Self::from_projjson(s);
+        }
+        if let Some(code) = iau::reference(s) {
+            return Self::from_iau(code?);
         }
         // `EPSG:4326+5773`: a horizontal and a vertical CRS.
         if let Some(rest) = upper.strip_prefix("EPSG:")
@@ -383,6 +398,9 @@ impl SpatialRef {
     /// known.
     #[doc(hidden)]
     pub fn geographic_wkt(&self) -> Option<String> {
+        if let Some(entry) = self.wkt.as_deref().and_then(|wkt| iau::identify(wkt, self.proj4.as_deref())).and_then(iau::get) {
+            return iau::get(entry.base).map(|base| base.wkt.clone());
+        }
         if let Some(e) = self.epsg.and_then(epsg::get).or_else(|| self.esri.and_then(epsg::esri))
             && let Some(g) = epsg::get(e.geog)
         {
@@ -423,12 +441,12 @@ impl SpatialRef {
     }
 
     /// The authority and code of the CRS: `("EPSG", 4326)`, or `("ESRI", 54009)` for a CRS of
-    /// PROJ's ESRI authority.
+    /// PROJ's ESRI authority; IAU codes use `("IAU_2015", code)`.
     pub fn authority(&self) -> Option<(&'static str, u32)> {
         match (self.epsg, self.esri) {
             (Some(code), _) => Some(("EPSG", code)),
             (None, Some(code)) => Some(("ESRI", code)),
-            (None, None) => None,
+            (None, None) => self.wkt.as_deref().and_then(|wkt| iau::identify(wkt, self.proj4.as_deref())).map(|code| ("IAU_2015", code)),
         }
     }
 
@@ -542,7 +560,15 @@ impl SpatialRef {
     pub fn same_as(&self, other: &SpatialRef) -> bool {
         match (self.authority(), other.authority()) {
             (Some(a), Some(b)) => a == b,
-            _ => self.to_wkt().is_some() && self.to_wkt() == other.to_wkt(),
+            _ => {
+                // WKT can retain an IAU ID while an explicit PROJ override changes
+                // the effective definition. Equal stored WKT alone is insufficient.
+                let iau = |s: &SpatialRef| s.wkt.as_deref().and_then(iau::declared).is_some();
+                if (iau(self) || iau(other)) && self.proj4 != other.proj4 {
+                    return false;
+                }
+                self.to_wkt().is_some() && self.to_wkt() == other.to_wkt()
+            }
         }
     }
 
@@ -676,6 +702,11 @@ fn wkt_datums_and_others(wkt: &str) -> (Vec<u32>, &'static [u32]) {
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
         return Some(code);
+    }
+    // A compound CRS is not its horizontal CRS: only the code it declares identifies it, as in
+    // `SpatialRef::from_wkt`.
+    if def::split_compound(wkt).is_some() {
+        return None;
     }
     let (datums, others) = wkt_datums_and_others(wkt);
     // No known datum (or no datum node, or WKT the reader cannot parse): no code, and on purpose
@@ -1145,6 +1176,7 @@ impl Transformer {
     /// epoch when both are dynamic and both epochs are given.
     pub fn with_options(src: &SpatialRef, dst: &SpatialRef, opts: &TransformOptions) -> Result<Self> {
         let (mut s, mut d) = (Def::new(src)?, Def::new(dst)?);
+        s.compatible_body(&d)?;
         if opts.promote_to_3d {
             s.promote_to_3d();
             d.promote_to_3d();
@@ -2100,6 +2132,14 @@ mod tests {
         assert_eq!(c.epsg, None);
         assert_eq!(c.name().unwrap(), "WGS 84 + EGM96 height");
         assert!(c.to_wkt().unwrap().starts_with("COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\""));
+        // Its WKT is not identified as EPSG:4326, which has no heights, read back or identified.
+        let wkt = c.to_wkt().unwrap();
+        assert_eq!(identify_epsg(&wkt), None);
+        let read = SpatialRef::from_wkt(&wkt);
+        assert_eq!((read.epsg, read.name().as_deref()), (None, Some("WGS 84 + EGM96 height")));
+        // A compound WKT declaring its code keeps it.
+        let declared = format!("{},AUTHORITY[\"EPSG\",\"9707\"]]", wkt.strip_suffix(']').unwrap());
+        assert_eq!(SpatialRef::from_wkt(&declared).epsg, Some(9707));
         assert!(c.is_geographic());
         let k = SpatialRef::from_epsg(5498).unwrap();
         assert_eq!(k.name().unwrap(), "NAD83 + NAVD88 height");

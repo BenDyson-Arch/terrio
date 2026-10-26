@@ -1,9 +1,12 @@
 # terrio-crs
 
 Coordinate reference systems and transformations, extracted from Terrio.
-The crate includes EPSG and ESRI definitions, WKT/PROJ parsing, the documented PROJJSON v0.7 subset, datum operation
+The crate includes EPSG, ESRI and IAU_2015 definitions, WKT/PROJ parsing, the documented PROJJSON v0.7 subset, datum operation
 selection, coordinate epochs, and local or in-memory datum grids. Coordinates
-use traditional GIS order: longitude/easting, then latitude/northing.
+use GDAL's traditional GIS mapping: longitude/easting, then latitude/northing
+for ordinary Earth CRSs. Planetary west-positive systems retain their registry
+mapping; for example, IAU_2015:49901 uses latitude then west-positive longitude,
+and its projected CRS 49911 uses westing then northing.
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer};
@@ -28,15 +31,18 @@ ellipsoid are recorded in the conformance tests.
 | --- | --- | --- |
 | `wbprojection-fallback` | Off | Additional projection methods and legacy identification/WKT fallback |
 | `grid-transport` | Off | Host-provided seekable grid transport, without an HTTP dependency |
+| `libzstd` | On | Zstandard TIFF grids, with the zstd C library |
 
 Terrio enables `wbprojection-fallback` to retain its existing projection coverage.
 A method requiring the feature returns an error naming the feature when it is
 disabled. Canonical authority references, including versioned EPSG URNs/URLs, use the same
 parser in both configurations. Permissive legacy authority fragments remain a
-fallback feature. Both configurations include the same EPSG/ESRI tables, native datum
+fallback feature. Both configurations include the same EPSG/ESRI/IAU tables, native datum
 operations and local grid readers. Table decompression uses `ruzstd` on all
 targets. TIFF grid codecs retain their existing features, including native Zstd;
-the default crate does not claim a dependency graph free of C codecs.
+the default crate does not claim a dependency graph free of C codecs. With
+`default-features = false` there is no C: Zstandard grids are then not read (PROJ's grids
+are DEFLATE-compressed).
 
 Enable `grid-transport` to supply a
 seekable network transport through `network::GridTransport`; Terrio supplies

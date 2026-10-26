@@ -499,6 +499,69 @@ check file loading, malformed/unsupported definitions, wrong units/dimensions,
 and that a root authority ID cannot overwrite a caller's false easting.
 
 
+## IAU_2015 authority support (#271)
+
+`iau-source.json` records the registry version, PROJ source revision and
+attribution. `scripts/gen_iau_table.py` exports all 2,201 definitions from the
+pinned PROJ 9.8.1 database, retaining their full WKT2 and celestial-body IDs.
+`iau_benchmark.json` separately retains `pair-mars-iau` and its PROJ 9.9.0 oracle
+from rust-proj-capability revision `ddd9fac70ec370acd9651ebb8b46035207347ad5`.
+
+`iau_reference.json` contains 2,074 geographic/projected CRS pairs with two points
+each, frozen against GDAL 3.12.2 / PROJ 9.8.1. It records forward and inverse
+outputs separately, plus four cases for kilometres, US survey feet, offsets, a
+Mars polar-radius sphere and a conformal sphere at a nonzero latitude. Projected
+component errors are converted to metres before applying the 1 mm allowance;
+inverse angular components allow 1e-8 degrees. Native Rust, Python and Node/WASM
+exercise the full corpus, while CLI/MCP also verify the pinned Mars case and
+cross-body refusal. The live `iau` conformance suite uses the public CLI.
+
+The reference's own inverse is approximate for some definitions. Five inverse
+samples are refused; the error text is retained in the fixture. Native refusal
+or recovery of the original point within the angular allowance is permitted
+only for these recorded reference refusals. The largest successful GDAL inverse
+round-trip residual is 3.834276481 degrees for Eros `200043361`; tests compare
+its actual inverse output with PROJ and do not claim exact original-point
+recovery. Other boundary/domain differences retain the policies documented for
+the individual projections.
+
+```sh
+cargo test -p terrio-crs --test iau
+CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio-crs \
+  --target wasm32-wasip1 --test iau
+cargo test -p terrio-cli --test mcp iau
+python -m pytest python/tests/test_iau.py
+node --test --test-name-pattern='IAU_2015' js/tests/node.test.mjs
+python scripts/conformance.py ../terrio-data --only iau --strict
+```
+
+The regression also checks every registry definition can initialize and reopen
+its WKT, unknown codes/years, versioned authority forms, west-positive axes,
+planetocentric latitude conversion and rejection of Earth datum operations on
+planetary coordinates. The numerical fixes use PROJ's sixth-order meridian
+series, inverse authalic-latitude refinement and inverse normalization order;
+the copied formulas and tables are attributed in `NOTICE`.
+
+
+The sixth-order meridian series also changes Earth calculations. A WGS 84
+latitude sweep from -90 to 90 degrees in 0.001-degree increments, comparing
+`Mlfn` before this change (d8411cd2) with the new series, measured a maximum
+meridian-distance change of 4.920 micrometres and inverse-latitude change of
+4.409e-11 degrees. Earth projections remain covered by the `proj_strings`
+regressions registered in the conformance runner's CRS suite. These small
+coordinate changes can affect integer raster rounding near half-integer
+boundaries; the typed-storage warp regression compares every pixel exactly with
+the previous Float64 buffer representation. Both runs retain the same logical output type,
+resampling, nodata rules and chunk plan; only buffer storage changes. This keeps
+multiple-source overlays and both memory budgets covered without coupling the
+storage invariant to historical projection checksums. No pixel tolerance is
+used in this differential storage test. An independent value guard,
+`earth_meridian_and_inverse_values_match_proj` in `proj_strings.rs`, checks
+nine frozen GDAL 3.12.2 / PROJ 9.8.1 points for UTM 10N, equidistant conic and
+sinusoidal, covering both hemispheres and high latitudes. It uses reference
+projected points for inverse checks, with allowances of 1 micrometre forward
+and 1e-11 degrees inverse, and is registered separately in the CRS conformance suite.
+
 ## Perspective projection coverage (#272)
 
 `perspective_benchmark.json` retains `seed-tpers` and `edge-tpers-back` from
@@ -525,3 +588,31 @@ python -m pytest python/tests/test_perspective.py
 node --test --test-name-pattern='perspective projections' js/tests/node.test.mjs
 python scripts/conformance.py ../terrio-data --only perspective --strict
 ```
+
+## Lazy GeoTIFF metadata and external overviews
+
+The `lazy-geotiff` conformance suite runs the Rust regressions for sample bit
+sizes, Float32 tag nodata, PAM overrides, band properties, RPC tags/sidecars,
+file lists and external `.ovr` images. These are frozen GDAL reference checks;
+they do not regenerate references with the GDAL installed at test time.
+Metadata, selected pixel values and explicit masks use exact comparisons.
+Float16 samples remain widened to Float32 in Terrio, with `sample_bits() == 16`;
+GDAL 3.11 and later expose Float16 as a distinct data type.
+
+GDAL 3.12.2 accepts external overview images of irregular aspect ratios,
+equal dimensions and larger dimensions, when band count and sample type match.
+The overview retains its own nodata and internal or `.ovr.msk` mask; a base
+TIFF mask is not inherited by the external dataset. Its georeferencing is
+scaled from the base raster. Internal overviews take precedence over `.ovr`.
+External overview discovery applies to local files and adds one `.ovr` existence
+probe per local open, and probes `.ovr.msk` only when `.ovr` exists. It does
+not decode pixel chunks or probe remote paths.
+
+```sh
+cargo test -p terrio --test external_overviews --test geotiff_nodata
+python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
+```
+
+`LazyRaster::rpc`, `file_list` and `sample_bits` are Rust APIs. Python and
+JavaScript exposure of these additional lazy-reader facts remains follow-up
+work; the existing bindings retain their behavior.

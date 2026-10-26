@@ -805,6 +805,27 @@ def epsg_cases(s, ctx, test, points, suffix=""):
     return True
 
 
+def suite_iau(ctx):
+    """All IAU_2015 projected definitions against live GDAL/PROJ."""
+    suite = Suite("iau", "IAU_2015 planetary CRSs", "GDAL/PROJ",
+                  "2,074 registered pairs plus unit/offset cases, planetary latitudes and axes. "
+                  "Component tolerances: 1 mm projected; 1e-8 degrees geographic.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_iau_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("IAU_2015", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_perspective(ctx):
     """Native near-sided and tilted perspective, including visibility/domain limits."""
     suite = Suite("perspective", "Perspective projections", "GDAL/PROJ",
@@ -867,6 +888,29 @@ def suite_geocentric(ctx):
     for case in cases:
         suite.cases.append(Case("XYZ", case["name"], case["status"], case["detail"]))
     if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_lazy_geotiff(ctx):
+    """Pinned GDAL metadata, sample and external-overview regressions through Rust."""
+    suite = Suite("lazy-geotiff", "Lazy GeoTIFF metadata and external overviews", "GDAL",
+                  "Frozen GDAL reference checks: sample bits, nodata, band properties, RPCs, "
+                  "file lists and external overview dimensions, values and masks. Exact assertions; "
+                  "this suite does not regenerate reference files with the installed GDAL.")
+    if not shutil.which("cargo"):
+        suite.skipped = "needs cargo"
+        return suite
+    tests = ["external_overviews", "geotiff_nodata", "geotiff_band_metadata",
+             "lazy_rpc", "lazy_sample_bits", "file_list"]
+    command = ["cargo", "test", "--release", "-p", "terrio"]
+    for test in tests:
+        command += ["--test", test]
+    code, out, err = run(command, {"TERRIO_TEST_DATA": os.path.abspath(ctx.data)})
+    for name, result in re.findall(r"^test (\S+) \.\.\. (ok|FAILED)$", out, re.MULTILINE):
+        suite.cases.append(Case("GeoTIFF", name, IDENTICAL if result == "ok" else DIFFERS,
+                                "Pinned reference assertions passed" if result == "ok" else tail(out)))
+    if not suite.cases or (code and not any(case.status == DIFFERS for case in suite.cases)):
         suite.error = tail(err or out)
     return suite
 
@@ -997,6 +1041,14 @@ PROJ_CASES = {
         "cass_matches_proj": "Cassini-Soldner: `+proj=cass +lat_0=48 +lon_0=10` (WGS 84 and sphere) and `+hyperbolic`",
     },
     "proj_strings": {
+        "earth_wkt2_negative_axes_match_gdal": (
+            "Earth WKT2 west/south geographic axes", TOLERANCE,
+            "GDAL 3.12.2/PROJ 9.8.1 traditional GIS order: forward/inverse within 1e-12 degrees for west/south, south/west and north/east controls",
+        ),
+        "earth_meridian_and_inverse_values_match_proj": (
+            "Earth meridian series and inverse normalization", TOLERANCE,
+            "nine pinned GDAL 3.12.2/PROJ 9.8.1 points: UTM 10N, equidistant conic and sinusoidal; forward <1 micrometre, inverse <1e-11 degrees",
+        ),
         "proj_strings_match_proj_or_are_refused": "Every PROJ projection as a PROJ string (117, WGS 84 and sphere): matches PROJ or is refused",
         "unsupported_projections_are_refused_in_every_encoding": "The projections terrio does not implement, refused as WKT too",
         "pyproj_wkt_matches_proj": "The same CRSs as pyproj's WKT1_GDAL and WKT2_2019 (known differences: #119, #156)",
@@ -1385,10 +1437,12 @@ SUITES = OrderedDict(
         ("tiles", suite_tiles),
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),
+        ("lazy-geotiff", suite_lazy_geotiff),
         ("crs", suite_crs),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("projjson", suite_projjson),
+        ("iau", suite_iau),
         ("crs-grids", suite_crs_grids),
     ]
 )

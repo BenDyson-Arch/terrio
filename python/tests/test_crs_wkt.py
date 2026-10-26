@@ -300,7 +300,7 @@ def test_vector_conversion_promotes_existing_heights_and_preserves_2d(tmp_path):
             for feature in json.loads(destination.read_text())["features"]
         ]
         expected = [43.57639261614531, 143.576799856499] if promote else [0, 100]
-        for point, height in zip(coordinates[:2], expected):
+        for point, height in zip(coordinates[:2], expected, strict=True):
             assert abs(point[2] - height) < 0.001
         assert len(coordinates[2]) == 2
 
