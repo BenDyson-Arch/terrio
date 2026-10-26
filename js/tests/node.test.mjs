@@ -1509,3 +1509,20 @@ test("promoteTo3d transforms ellipsoidal heights of a 2D CRS", () => {
   assert.ok(Math.abs(promoted[0][0] - 4.367683424792349) < 1e-8);
   assert.ok(Math.abs(promoted[1][0] - 52.006949098822965) < 1e-8);
 });
+
+test("promoteTo3d applies to vector toBytes and preserves 2D geometry", () => {
+  const source = terrio.fromGeoJSON({ type: "FeatureCollection", features: [
+    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000, 0] } },
+    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000, 100] } },
+    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000] } },
+  ] }, "points", "EPSG:28992");
+  const convert = promoteTo3d => terrio.open(source.toBytes("points.geojson", {
+    tSrs: "EPSG:4979", promoteTo3d,
+  }), "points.geojson").toGeoJSON().features.map(feature => feature.geometry.coordinates);
+  assert.deepEqual(convert(false).map(point => point[2]), [0, 100, undefined]);
+  const promoted = convert(true);
+  for (const [index, height] of [[0, 43.57639261614531], [1, 143.576799856499]]) {
+    assert.ok(Math.abs(promoted[index][2] - height) < 0.001, `height ${index}: ${promoted[index][2]}`);
+  }
+  assert.equal(promoted[2].length, 2);
+});

@@ -6,6 +6,7 @@ and PROJ differ on the PROJ string itself. The tests are skipped when pyproj or 
 installed.
 """
 
+import json
 import math
 
 import numpy as np
@@ -266,3 +267,39 @@ def test_convert_and_warp_coordinate_operation_controls(tmp_path):
     for version in ["3.12", "3.13"]:
         out = terrio.warp(raster, ts=(2, 2), kernel_version=version)
         assert out.read(1).shape == (2, 2)
+
+
+def test_vector_conversion_promotes_existing_heights_and_preserves_2d(tmp_path):
+    source = tmp_path / "points.geojson"
+    source.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {},
+                        "geometry": {"type": "Point", "coordinates": point},
+                    }
+                    for point in [[85000, 447000, 0], [85000, 447000, 100], [85000, 447000]]
+                ],
+            }
+        )
+    )
+    for promote in [False, True]:
+        destination = tmp_path / f"converted-{promote}.geojson"
+        terrio.convert(
+            str(source),
+            str(destination),
+            s_srs="EPSG:28992",
+            t_srs="EPSG:4979",
+            ct_opt={"PROMOTE_TO_3D": "YES" if promote else "NO"},
+        )
+        coordinates = [
+            feature["geometry"]["coordinates"]
+            for feature in json.loads(destination.read_text())["features"]
+        ]
+        expected = [43.57639261614531, 143.576799856499] if promote else [0, 100]
+        for point, height in zip(coordinates[:2], expected):
+            assert abs(point[2] - height) < 0.001
+        assert len(coordinates[2]) == 2

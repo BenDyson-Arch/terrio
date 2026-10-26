@@ -961,6 +961,12 @@ PROJ_CASES = {
         "reports_the_transformation_used": "Operation report: the name and accuracy of PROJ 9.9's first candidate without grids (27700 both ways, 31467, `+towgs84`)",
         "reports_ballparks_and_no_operation": "Operation report: ballparks (4610, EGM96 without its grid) and no operation for one datum",
     },
+    "crs_policy": {
+        "promoted_vector_heights_match_gdal_and_keep_geometry_dimensions": (
+            "Promoted vector heights and preserved geometry dimensions", TOLERANCE,
+            "GDAL 3.12.2 / PROJ 9.8.1: RD New to WGS84 3D, 1e-8 degrees / 1 mm; 2D stays 2D",
+        ),
+    },
     "promote_to_3d": {
         "heights_of_promoted_2d_crss_go_through_the_datum_transformation": (
             "PromoteTo3D: heights of 2D CRSs through the datum transformation (RD New, sterea, sphere)", TOLERANCE,
@@ -968,7 +974,10 @@ PROJ_CASES = {
         ),
     },
     "refusal_kinds": {
-        "strict_policy_allows_vertical_unit_conversion": "NAVD88 metres to US survey feet under ONLY_BEST and ALLOW_BALLPARK=NO, GDAL 3.12.2 / PROJ 9.8.1; 1e-10 height units",
+        "strict_policy_allows_vertical_unit_conversion": (
+            "Strict NAVD88 metres to US survey feet", TOLERANCE,
+            "GDAL 3.12.2 / PROJ 9.8.1 under ONLY_BEST and ALLOW_BALLPARK=NO; 1e-10 height units",
+        ),
         "strict_refusals_have_their_own_variants": "ONLY_BEST and ALLOW_BALLPARK refuse where GDAL 3.13.3 does without grids, horizontal and vertical (CH1903+, Tokyo, WGS 84 + EGM96)",
     },
     "geostationary": {
@@ -1003,7 +1012,7 @@ def proj_cases(s):
     """
     group = "CRS references and projection definitions"
     for file, tests in PROJ_CASES.items():
-        package = "terrio" if file == "geostationary" else "terrio-crs"
+        package = "terrio" if file in {"geostationary", "crs_policy"} else "terrio-crs"
         features = [] if package == "terrio" else ["--features", "wbprojection-fallback"]
         code, out, err = run(["cargo", "test", "--release", "-p", package, *features, "--test", file])
         first_case = len(s.cases)

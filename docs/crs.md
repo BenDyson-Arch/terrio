@@ -261,7 +261,9 @@ model applies, heights are kept, as PROJ's ballpark vertical transformation does
 heights are kept as GDAL keeps them (or transformed, for the pipelines PROJ runs on heights).
 With `TransformOptions { promote_to_3d: true, .. }` (Rust), the heights of 2D CRSs are ellipsoidal
 heights that datum transformations change, as GDAL gives them after `PromoteTo3D`: EPSG:28992
-(85000, 447000, 0) is 43.576 m above the WGS 84 ellipsoid in EPSG:4979, where it stays 0 by default.
+(85000, 447000, 0) is 43.576 m above the WGS 84 ellipsoid in EPSG:4979, where it stays 0 by default. Vector layer
+conversions pass existing Z values through the promoted transformer and preserve
+2D input geometries as 2D, matching OGR geometry transformation.
 
 `Transformer::transform_3d` in Rust, `transform_points(xs, ys, src, dst, zs)` in Python,
 `transformPoints(xs, ys, src, dst, zs)` in JavaScript and `x y z` lines on `terrio crs`'s
