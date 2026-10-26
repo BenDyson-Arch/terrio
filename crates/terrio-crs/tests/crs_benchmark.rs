@@ -259,7 +259,6 @@ fn native_wagner_wkt1_includes_pole_graticules() {
     }
 }
 
-/// PROJ 9.8.1 / pyproj 3.8.0 resolve the versioned references to EPSG:4326.
 #[test]
 fn web_mercator_keeps_its_origin_and_false_origin() {
     // GDAL 3.13.3 / PROJ 9.9.0. wbprojection, which `webmerc` went to with the fallback, dropped
@@ -278,6 +277,7 @@ fn web_mercator_keeps_its_origin_and_false_origin() {
     }
 }
 
+/// PROJ 9.8.1 / pyproj 3.8.0 resolve the versioned references to EPSG:4326.
 #[test]
 fn versioned_authority_references_match_proj() {
     for reference in [
