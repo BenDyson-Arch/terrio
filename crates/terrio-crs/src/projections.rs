@@ -3434,6 +3434,20 @@ mod benchmark_regressions {
     use super::*;
 
     #[test]
+    fn gauss_scale_is_finite_at_exact_poles() {
+        for e in [0.0, Ell::wgs84().e, 0.5] {
+            for phi0 in [-HALFPI, HALFPI] {
+                let (gauss, chi, radius) = Gauss::new(e, phi0).unwrap();
+                // At either pole c = 1 and the tangent ratio is 1. This is
+                // the analytic limit, including the former south-pole branch.
+                let expected = 1.0 / srat(e * phi0.sin(), 0.5 * e);
+                assert!(gauss.k.is_finite() && (gauss.k - expected).abs() < 1e-14);
+                assert!((chi - phi0).abs() < 1e-15 && radius.is_finite());
+            }
+        }
+    }
+
+    #[test]
     fn mollweide_and_wagner_refuse_non_finite_inputs() {
         for name in ["moll", "wag4", "wag5"] {
             let projection = Moll::new(name);

@@ -1498,3 +1498,14 @@ test("near-sided and tilted perspective projections match PROJ", () => {
     }
   }
 });
+
+test("promoteTo3d transforms ellipsoidal heights of a 2D CRS", () => {
+  // GDAL 3.12.2 / PROJ 9.8.1, RD New to WGS 84 3D, without grids.
+  const args = [[85000], [447000], "EPSG:28992", "EPSG:4979", [0]];
+  const normal = terrio.transformPoints(...args);
+  const promoted = terrio.transformPoints(...args, { promoteTo3d: true });
+  assert.equal(normal[2][0], 0);
+  assert.ok(Math.abs(promoted[2][0] - 43.57639261614531) < 0.001);
+  assert.ok(Math.abs(promoted[0][0] - 4.367683424792349) < 1e-8);
+  assert.ok(Math.abs(promoted[1][0] - 52.006949098822965) < 1e-8);
+});

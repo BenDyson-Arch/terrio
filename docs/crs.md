@@ -156,6 +156,22 @@ GeoKeys of PDAL's `autzen_trim.las`, on NAD83(HARN), give NAD83(HARN) / Oregon G
 (EPSG:2994), not the same projection on NAD83, and a UTM zone on such a datum is that datum's.
 The same GeoKeys are read in LAS files.
 
+## PROJ string interpretation changes
+
+PROJ strings supplied as CRSs follow PROJ's CRS import rules. For polar
+`+proj=stere` with `+lat_0=90` or `-90`, an explicit `+lat_ts` selects the
+hemisphere: negative selects south, and zero or positive selects north. For
+example, `+lat_0=-90 +lat_ts=90` now describes the north pole. This differs from
+PROJ's bare stereographic operation, which takes the hemisphere from `lat_0`.
+Use a negative `lat_ts` for a southern standard parallel. Terrio's CRS API does
+not interpret these strings as raw projection operations.
+
+For `+proj=lcc +lat_1=X` with neither `lat_0` nor `lat_2`, CRS import supplies
+zero for both omitted parameters. Earlier Terrio versions used X for both,
+matching a bare projection operation instead. Supply `+lat_0=X +lat_2=X`
+explicitly to retain that tangent-cone definition. Coordinates from previously
+ambiguous strings can change substantially under these corrected CRS rules.
+
 ## Transformations
 
 ```sh

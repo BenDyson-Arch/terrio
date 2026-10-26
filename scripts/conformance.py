@@ -968,6 +968,7 @@ PROJ_CASES = {
         ),
     },
     "refusal_kinds": {
+        "strict_policy_allows_vertical_unit_conversion": "NAVD88 metres to US survey feet under ONLY_BEST and ALLOW_BALLPARK=NO, GDAL 3.12.2 / PROJ 9.8.1; 1e-10 height units",
         "strict_refusals_have_their_own_variants": "ONLY_BEST and ALLOW_BALLPARK refuse where GDAL 3.13.3 does without grids, horizontal and vertical (CH1903+, Tokyo, WGS 84 + EGM96)",
     },
     "geostationary": {

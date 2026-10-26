@@ -35,3 +35,19 @@ fn strict_refusals_have_their_own_variants() {
     // A definition error stays `Crs`.
     assert!(matches!(SpatialRef::parse("+proj=nonsense"), Err(Error::Crs(_))));
 }
+
+#[test]
+fn strict_policy_allows_vertical_unit_conversion() {
+    // GDAL 3.12.2 / PROJ 9.8.1, traditional GIS order, no grids:
+    // NAVD88 metres to NAVD88 US survey feet is a unit conversion, not a ballpark.
+    let source = SpatialRef::parse("EPSG:4326+5703").unwrap();
+    let target = SpatialRef::parse("EPSG:4326+6360").unwrap();
+    let options = TransformOptions { only_best: true, allow_ballpark: Some(false), ..Default::default() };
+    let forward = Transformer::with_options(&source, &target, &options).unwrap();
+    let actual = forward.transform_3d(-100.0, 40.0, 100.0).unwrap();
+    assert_eq!((actual.0, actual.1), (-100.0, 40.0));
+    assert!((actual.2 - 328.08333333333337).abs() < 1e-10);
+    let inverse = Transformer::with_options(&target, &source, &options).unwrap();
+    let back = inverse.transform_3d(actual.0, actual.1, actual.2).unwrap();
+    assert!((back.2 - 100.0).abs() < 1e-10);
+}
