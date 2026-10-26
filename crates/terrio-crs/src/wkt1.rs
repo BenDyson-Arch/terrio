@@ -17,6 +17,20 @@ pub(crate) struct Node {
 }
 
 impl Node {
+    pub fn to_wkt(&self) -> String {
+        let args: Vec<String> = self
+            .args
+            .iter()
+            .map(|a| match a {
+                Arg::Str(s) => format!("\"{}\"", s.replace('"', "\"\"")),
+                Arg::Num(v) => v.to_string(),
+                Arg::Ident(s) => s.clone(),
+                Arg::Node(n) => n.to_wkt(),
+            })
+            .collect();
+        format!("{}[{}]", self.key, args.join(","))
+    }
+
     /// The first child node with a keyword.
     pub fn child(&self, key: &str) -> Option<&Node> {
         self.args.iter().find_map(|a| match a {
@@ -162,7 +176,7 @@ pub(crate) struct Converted {
 pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let key = root.key.to_ascii_uppercase();
     let geogcs = match key.as_str() {
-        "GEOGCS" => root,
+        "GEOGCS" | "GEOCCS" => root,
         "PROJCS" => root.child("GEOGCS")?,
         _ => return None,
     };
@@ -171,7 +185,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let a = sph.num(1)?;
     let rf = sph.num(2)?;
     // Angular unit of the geographic CRS, in degrees.
-    let ang = geogcs.child("UNIT").and_then(|u| u.num(1)).map(|r| r.to_degrees()).unwrap_or(1.0);
+    let ang = if key == "GEOCCS" { 1.0 } else { geogcs.child("UNIT").and_then(|u| u.num(1)).map(|r| r.to_degrees()).unwrap_or(1.0) };
     // WKT rounds the size of a degree (0.0174532925199433) and of a grad.
     let ang = [1.0, 0.9].into_iter().find(|u| (ang - u).abs() < 1e-9).unwrap_or(ang);
     let pm = geogcs.child("PRIMEM").and_then(|p| p.num(1)).unwrap_or(0.0) * ang;
@@ -188,6 +202,13 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         if !v.is_empty() {
             tail.push(format!("+towgs84={}", v.join(",")));
         }
+    }
+    if key == "GEOCCS" {
+        let unit = root.child("UNIT").and_then(|u| u.num(1)).unwrap_or(1.0);
+        out.push(format!("+proj=geocent +to_meter={unit}"));
+        out.extend(tail);
+        let geog = datum.epsg().and_then(|d| super::epsg::geographic_on(d).first().copied());
+        return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None });
     }
     if key == "GEOGCS" {
         out.push("+proj=longlat".to_string());
@@ -504,6 +525,16 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geocentric_geographic_parent_uses_datum_registry() {
+        // GDA2020 datum 1168 is on geographic CRS 7844, without a numeric offset.
+        let wkt = r#"GEOCCS["GDA2020",DATUM["Geocentric_Datum_of_Australia_2020",SPHEROID["GRS 1980",6378137,298.257222101],AUTHORITY["EPSG","1168"]],PRIMEM["Greenwich",0],UNIT["metre",1]]"#;
+        let c = to_proj(&parse(wkt).unwrap()).unwrap();
+        assert_eq!(c.geog, Some(7844));
+        let unknown = wkt.replace("1168", "999999");
+        assert_eq!(to_proj(&parse(&unknown).unwrap()).unwrap().geog, None);
+    }
 
     #[test]
     fn converts_esri_feet() {

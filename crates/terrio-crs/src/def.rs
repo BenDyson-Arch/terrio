@@ -16,6 +16,8 @@ use std::sync::Arc;
 pub(crate) struct Def {
     /// The projection, `None` for a geographic CRS.
     proj: Option<Arc<dyn Proj>>,
+    geocentric: bool,
+    z_down: bool,
     /// The pole rotation of a rotated-pole grid (`+proj=ob_tran`), a CRS in degrees without a
     /// projection, whose longitudes are relative to `lam0`.
     rot: Option<Rotation>,
@@ -215,6 +217,25 @@ impl Def {
         }
         let name = p.str("proj").ok_or_else(|| Error::Crs(format!("no +proj in '{s}'")))?;
         let datum_name = p.str("datum");
+        if name == "geocent" {
+            for key in ["a", "b", "rf", "f", "es", "e", "R"] {
+                if p.has(key) && p.f64(key).is_none_or(|v| !v.is_finite()) {
+                    return Err(Error::Crs(format!("invalid geocentric ellipsoid parameter {key}")));
+                }
+            }
+            if (p.has("ellps") && p.str("ellps").and_then(Ell::named).is_none())
+                || (p.has("datum") && datum_name.and_then(datum_geog).is_none())
+            {
+                return Err(Error::Crs("unknown geocentric ellipsoid or datum".into()));
+            }
+            if p.has("towgs84") {
+                let values = p.str("towgs84").unwrap_or("").split(',').collect::<Vec<_>>();
+                if !matches!(values.len(), 3 | 7) || values.iter().any(|v| v.trim().parse::<f64>().ok().is_none_or(|n| !n.is_finite())) {
+                    return Err(Error::Crs("geocentric towgs84 needs 3 or 7 finite parameters".into()));
+                }
+            }
+        }
+
         let mut ell = datum::ellipsoid(&p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
         // `+R_A`: a sphere of the ellipsoid's area.
         if p.has("R_A") && ell.es != 0.0 {
@@ -222,15 +243,21 @@ impl Def {
             let r = ell.a * (0.5 * qsfn(1.0, e, ell.one_es)).sqrt();
             ell = Ell::from_a_rf(r, 0.0);
         }
-        let to_meter = p
-            .str("to_meter")
-            .and_then(|v| match v.split_once('/') {
-                Some((n, d)) => Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?),
-                None => v.parse().ok(),
-            })
-            .or_else(|| p.str("units").and_then(unit_to_meter))
-            .unwrap_or(1.0);
-        let pm = p.str("pm").map(|v| v.parse::<f64>().ok().or_else(|| prime_meridian(v)).unwrap_or(0.0)).unwrap_or(0.0);
+        let explicit_to_meter = p.str("to_meter").and_then(|v| match v.split_once('/') {
+            Some((n, d)) => Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?),
+            None => v.parse().ok(),
+        });
+        let to_meter = explicit_to_meter.or_else(|| p.str("units").and_then(unit_to_meter)).unwrap_or(1.0);
+        let explicit_pm = p.str("pm").and_then(|v| {
+            v.parse::<f64>()
+                .ok()
+                .or_else(|| prime_meridian(v))
+                .or_else(|| if name == "geocent" { p.angle("pm").map(f64::to_degrees) } else { None })
+        });
+        if name == "geocent" && p.has("pm") && explicit_pm.is_none_or(|v| !v.is_finite()) {
+            return Err(Error::Crs("invalid geocentric prime meridian".into()));
+        }
+        let pm = explicit_pm.unwrap_or(0.0);
         let axis = match p.str("axis") {
             Some(a) if a.len() >= 2 && a.bytes().take(2).all(|c| b"enws".contains(&c)) => [a.as_bytes()[0], a.as_bytes()[1]],
             _ => *b"en",
@@ -245,8 +272,31 @@ impl Def {
             y0: p.f64("y_0").unwrap_or(0.0),
         };
         let rot = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
+        let geocentric = name == "geocent";
+        if geocentric && p.has("to_meter") && explicit_to_meter.is_none() {
+            return Err(Error::Crs("invalid geocentric to_meter".into()));
+        }
+        if geocentric && p.has("axis") {
+            let b = p.str("axis").unwrap_or("").as_bytes();
+            let valid = b.len() == 3
+                && matches!(b[2], b'u' | b'd')
+                && ((matches!(b[0], b'e' | b'w') && matches!(b[1], b'n' | b's'))
+                    || (matches!(b[0], b'n' | b's') && matches!(b[1], b'e' | b'w')));
+            if !valid {
+                return Err(Error::Crs("geocentric axis must span east/west, north/south and up/down".into()));
+            }
+        }
+
+        if geocentric && p.has("units") && p.str("units").and_then(unit_to_meter).is_none() && !p.has("to_meter") {
+            return Err(Error::Crs("unknown geocentric linear unit".into()));
+        }
+        if geocentric
+            && (!to_meter.is_finite() || to_meter <= 0.0 || !ell.a.is_finite() || ell.a <= 0.0 || !ell.es.is_finite() || ell.es >= 1.0)
+        {
+            return Err(Error::Crs("invalid geocentric unit or ellipsoid".into()));
+        }
         let geographic = matches!(name, "longlat" | "latlong" | "lonlat" | "latlon") || rot.is_some();
-        let proj: Option<Arc<dyn Proj>> = if geographic {
+        let proj: Option<Arc<dyn Proj>> = if geographic || geocentric {
             None
         } else {
             match projections::build(name, &mut setup)? {
@@ -269,6 +319,8 @@ impl Def {
         let (ell, lam0, phi0, x0, y0) = (setup.ell, setup.lam0, setup.phi0, setup.x0, setup.y0);
         let mut d = Self {
             proj,
+            geocentric,
+            z_down: p.str("axis").is_some_and(|a| a.as_bytes().get(2) == Some(&b'd')),
             rot,
             ell,
             lam0,
@@ -293,7 +345,13 @@ impl Def {
         if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
         } else if let Some(t) = towgs84 {
-            if t.iter().any(|v| *v != 0.0) {
+            // Zero translation still converts between different ellipsoids. On
+            // WGS 84 itself it is exactly the WGS 84 datum, without a Cartesian round trip.
+            let wgs84 = Ell::wgs84();
+            if t.iter().all(|v| *v == 0.0) && ell.a == wgs84.a && ell.es == wgs84.es {
+                d.datum = Some(6326);
+                d.geog = Some(4326);
+            } else {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(ell, &t)))];
             }
         } else if let Some(code) = datum_name.and_then(datum_geog)
@@ -326,6 +384,15 @@ impl Def {
     /// Whether both CRSs have the same coordinate conversion (projection, units, axes and prime
     /// meridian), whatever their datums: compared on points around the projection's origin.
     pub fn same_conversion(&self, other: &Def) -> bool {
+        if self.geocentric != other.geocentric {
+            return false;
+        }
+        if self.geocentric {
+            return self.axis == other.axis
+                && self.z_down == other.z_down
+                && (self.to_meter / other.to_meter - 1.0).abs() < 1e-12
+                && (self.pm - other.pm).abs() < 1e-12;
+        }
         match (&self.proj, &other.proj) {
             (None, None) => {
                 (self.to_deg - other.to_deg).abs() < 1e-12
@@ -393,6 +460,7 @@ impl Def {
                     Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, d.ell.a, d.ell.es)),
                     None => super::identify_epsg(geogcs_text(w)?),
                 });
+                let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
                 if let Some(e) = geog.and_then(epsg::get)
                     && e.proj.starts_with("+proj=longlat")
                 {
@@ -415,6 +483,8 @@ impl Def {
             let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
             let mut d = Self {
                 proj: None,
+                geocentric: false,
+                z_down: false,
                 rot: None,
                 ell,
                 lam0: 0.0,
@@ -450,7 +520,41 @@ impl Def {
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in
     /// degrees, but are not longitudes and latitudes.
     pub fn is_geographic(&self) -> bool {
-        self.proj.is_none() && self.rot.is_none()
+        self.proj.is_none() && self.rot.is_none() && !self.geocentric
+    }
+
+    pub fn is_geocentric(&self) -> bool {
+        self.geocentric
+    }
+
+    /// The internal geographic coordinate space used to select and apply datum operations.
+    pub fn geographic_endpoint(&self) -> Self {
+        let mut d = self.clone();
+        d.geocentric = false;
+        d.three_d = true;
+        d.to_meter = 1.0;
+        d.to_deg = 1.0;
+        d.pm = 0.0;
+        d.axis = *b"en";
+        d.z_down = false;
+        d
+    }
+
+    pub fn unproject_geocentric(&self, x: f64, y: f64, z: f64) -> Option<(f64, f64, f64)> {
+        let (x, y) = self.unaxis(x, y);
+        let z = if self.z_down { -z } else { z };
+        let [lon, lat, h] = datum::from_cart(&self.ell, x * self.to_meter, y * self.to_meter, z * self.to_meter);
+        (lon.is_finite() && lat.is_finite() && h.is_finite()).then_some((adjlon(lon + self.pm).to_degrees(), lat.to_degrees(), h))
+    }
+
+    pub fn project_geocentric(&self, lon: f64, lat: f64, h: f64) -> Option<(f64, f64, f64)> {
+        if lat.abs() > 90.0 + 1e-10 {
+            return None;
+        }
+        let [x, y, z] = datum::to_cart(&self.ell, lon.to_radians() - self.pm, lat.clamp(-90.0, 90.0).to_radians(), h);
+        let (x, y) = self.axis(x / self.to_meter, y / self.to_meter);
+        let z = z / self.to_meter * if self.z_down { -1.0 } else { 1.0 };
+        (x.is_finite() && y.is_finite() && z.is_finite()).then_some((x, y, z))
     }
 
     /// Whether this is a rotated-pole grid (`+proj=ob_tran`).
@@ -615,7 +719,7 @@ impl Def {
 
     /// Whether coordinates have a height: a geographic 3D or a compound CRS.
     pub fn has_height(&self) -> bool {
-        self.three_d || self.vertical.is_some()
+        self.three_d || self.geocentric || self.vertical.is_some()
     }
 
     /// Whether it is a dynamic CRS.
@@ -732,10 +836,11 @@ pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
 /// The `TOWGS84` parameters of a WKT 1 definition, when they shift.
 fn wkt_towgs84(w: &str) -> Option<Vec<f64>> {
     let root = wkt1::parse(w)?;
-    let geogcs = if root.key.eq_ignore_ascii_case("GEOGCS") { &root } else { root.child("GEOGCS")? };
+    let geogcs =
+        if root.key.eq_ignore_ascii_case("GEOGCS") || root.key.eq_ignore_ascii_case("GEOCCS") { &root } else { root.child("GEOGCS")? };
     let t = geogcs.child("DATUM")?.child("TOWGS84")?;
     let v: Vec<f64> = (0..t.args.len()).filter_map(|i| t.num(i)).collect();
-    ((v.len() == 3 || v.len() == 7) && v.iter().any(|x| *x != 0.0)).then_some(v)
+    (v.len() == 3 || v.len() == 7).then_some(v)
 }
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.

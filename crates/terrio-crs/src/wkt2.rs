@@ -22,10 +22,7 @@ pub(crate) fn handles(root: &Node) -> bool {
         return root.child("SOURCECRS").and_then(first_node).is_some_and(handles);
     }
     if GEOGRAPHIC.contains(&key.as_str()) {
-        // A geocentric GEODCRS (a Cartesian CS) is not a longitude-latitude CRS.
-        return !root
-            .child("CS")
-            .is_some_and(|cs| matches!(cs.args.first(), Some(Arg::Ident(t)) if !t.eq_ignore_ascii_case("ellipsoidal")));
+        return true;
     }
     PROJECTED.contains(&key.as_str())
 }
@@ -52,6 +49,43 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let geog = Geodetic::read(base, !projected)?;
     let mut tail = geog.tail();
     if !projected {
+        if let Some(cs) = root.child("CS")
+            && !matches!(cs.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian") || t.eq_ignore_ascii_case("ellipsoidal"))
+        {
+            return Err(bad("unsupported geodetic coordinate system"));
+        }
+        if let Some(cs) = root.child("CS")
+            && matches!(cs.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian"))
+        {
+            let axes: Vec<_> = root.children("AXIS").collect();
+            if cs.num(1) != Some(3.0) || axes.len() != 3 {
+                return Err(bad("geocentric Cartesian CS must declare three axes"));
+            }
+            let directions = ["geocentricX", "geocentricY", "geocentricZ"];
+            for (i, axis) in axes.iter().enumerate() {
+                if !matches!(axis.args.get(1), Some(Arg::Ident(d)) if d.eq_ignore_ascii_case(directions[i]))
+                    || axis.child("ORDER").is_some_and(|o| o.num(0) != Some((i + 1) as f64))
+                {
+                    return Err(bad("geocentric WKT axes must be canonical X/Y/Z"));
+                }
+            }
+            let units = axes
+                .iter()
+                .map(|a| {
+                    a.child("LENGTHUNIT")
+                        .or_else(|| root.child("LENGTHUNIT"))
+                        .and_then(|u| u.num(1))
+                        .ok_or_else(|| bad("geocentric axis needs a linear unit"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let unit = units[0];
+            if units.iter().any(|u| *u != unit) {
+                return Err(bad("geocentric axes must use one linear unit"));
+            }
+            let mut out = vec![format!("+proj=geocent +to_meter={unit}")];
+            out.append(&mut tail);
+            return Ok(geog.converted(out.join(" ")));
+        }
         let mut out = vec!["+proj=longlat".to_string()];
         if (geog.ang - 1.0).abs() > 1e-12 {
             out.push(format!("+to_deg={}", geog.ang));
@@ -718,7 +752,7 @@ impl Params {
 }
 
 /// The 3 or 7 `+towgs84` parameters of a `BOUNDCRS`'s transformation to WGS 84: `None` when
-/// it is to another CRS, or does not shift.
+/// it is to another CRS or is not a supported Helmert operation.
 fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
     let target = root.child("TARGETCRS").and_then(first_node);
     let to_wgs84 = target.is_some_and(|t| {
@@ -776,8 +810,7 @@ fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
         };
         seven |= i >= 3;
     }
-    if v.iter().all(|x| *x == 0.0) {
-        return Ok(None);
-    }
+    // Even zero parameters declare a Cartesian datum operation. Keeping it is
+    // necessary when the source and destination ellipsoids differ.
     Ok(Some(if seven { v.to_vec() } else { v[..3].to_vec() }))
 }
