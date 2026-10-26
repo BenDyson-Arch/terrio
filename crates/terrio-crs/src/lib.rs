@@ -1075,22 +1075,24 @@ impl Heights {
     }
 }
 
-/// Whether a geoid model applies at a point, rather than the operation without steps used when
-/// the model's grid is missing (which keeps heights as they are).
-fn geoid_applies(ops: &[std::sync::Arc<datum::Op>], p: datum::Point) -> bool {
-    let (lon, lat) = (p.lon.to_degrees(), p.lat.to_degrees());
-    ops.iter().any(|op| !op.steps.is_empty() && op.available() && op.contains(lon, lat))
-}
-
 /// Picks and runs a geoid model for a point (degrees for the areas), `reverse` from heights to
-/// ellipsoidal heights.
-fn run_model(ops: &[std::sync::Arc<datum::Op>], p: datum::Point, reverse: bool) -> Option<datum::Point> {
+/// ellipsoidal heights. With the point, whether the operation that ran was a geoid model, rather
+/// than the operation without steps used when the model's grid is missing (which keeps heights
+/// as they are).
+fn run_model(ops: &[std::sync::Arc<datum::Op>], p: datum::Point, reverse: bool) -> Option<(datum::Point, bool)> {
     let (lon, lat) = (p.lon.to_degrees(), p.lat.to_degrees());
+    let applied = std::cell::Cell::new(false);
     datum::transform_with(
         ops,
         |op, _| op.contains(lon, lat),
-        |i| datum::run_op(&ops[i], p, reverse, true).inspect(|_| route::note(Some(&ops[i]), reverse, route::OpKind::Vertical)),
+        |i| {
+            datum::run_op(&ops[i], p, reverse, true).inspect(|_| {
+                applied.set(!ops[i].steps.is_empty());
+                route::note(Some(&ops[i]), reverse, route::OpKind::Vertical);
+            })
+        },
     )
+    .map(|q| (q, applied.get()))
 }
 
 /// A coordinate operation a [`Transformer`] uses for a point: see [`Transformer::operation_at`].
@@ -1504,10 +1506,10 @@ impl Transformer {
                 None => Some(p0),
             };
             if let Some(q) = q
-                && let Some(r) = run_model(ops, q, true)
+                && let Some((r, applied)) = run_model(ops, q, true)
             {
                 start = Some((*i, r));
-                geoid = geoid_applies(ops, q);
+                geoid = applied;
                 break;
             }
         }
@@ -1526,8 +1528,8 @@ impl Transformer {
         // From ellipsoidal heights to the target.
         for (j, ops) in &h.dst.models {
             let Some(q) = h.middle(i, *j).apply(&h.src.defs[i], sx, sy, p, true) else { continue };
-            let Some(r) = run_model(ops, q, false) else { continue };
-            if !geoid_applies(ops, q) {
+            let Some((r, applied)) = run_model(ops, q, false) else { continue };
+            if !applied {
                 self.check_vertical_policy(true)?;
             }
             let r = match &h.dst.routes[*j] {
