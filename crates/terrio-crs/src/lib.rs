@@ -1071,6 +1071,13 @@ impl Heights {
     }
 }
 
+/// Whether a geoid model applies at a point, rather than the operation without steps used when
+/// the model's grid is missing (which keeps heights as they are).
+fn geoid_applies(ops: &[std::sync::Arc<datum::Op>], p: datum::Point) -> bool {
+    let (lon, lat) = (p.lon.to_degrees(), p.lat.to_degrees());
+    ops.iter().any(|op| !op.steps.is_empty() && op.available() && op.contains(lon, lat))
+}
+
 /// Picks and runs a geoid model for a point (degrees for the areas), `reverse` from heights to
 /// ellipsoidal heights.
 fn run_model(ops: &[std::sync::Arc<datum::Op>], p: datum::Point, reverse: bool) -> Option<datum::Point> {
@@ -1283,6 +1290,23 @@ impl Transformer {
         Ok(selected)
     }
 
+    /// Refuses keeping the heights of a vertical CRS as they are (PROJ's ballpark vertical
+    /// transformation) when no geoid model or vertical transformation applies to a point, as GDAL
+    /// does: with `ALLOW_BALLPARK=NO`, and with `ONLY_BEST=YES` when there was one (`operations`)
+    /// whose grid is missing or which does not cover the point.
+    fn check_vertical_policy(&self, operations: bool) -> Result<()> {
+        if self.policy.only_best && operations {
+            return Err(Error::Crs(
+                "ONLY_BEST=YES: the best vertical operation does not apply (its grid is missing, or the point is outside it); set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"
+                    .into(),
+            ));
+        }
+        if self.policy.allow_ballpark == Some(false) {
+            return Err(Error::Crs("ALLOW_BALLPARK=NO: no geoid model or vertical transformation applies to this point".into()));
+        }
+        Ok(())
+    }
+
     /// The 2D transformation of a point, with its height kept (or, for transformations PROJ runs
     /// without keeping heights, transformed).
     fn transform_2d(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
@@ -1400,7 +1424,10 @@ impl Transformer {
                 match self.vertical_height(x, y, p) {
                     Some(h) => h / b.to_meter,
                     // None applies: heights are kept, as by PROJ's ballpark.
-                    None => b.height_of(a.to_metres(z)),
+                    None => {
+                        self.check_vertical_policy(true)?;
+                        b.height_of(a.to_metres(z))
+                    }
                 },
             ));
         }
@@ -1409,14 +1436,17 @@ impl Transformer {
         let _ = self.check_point_policy(x, y, datum::Point { lon, lat, h: z, t })?;
         let p0 = datum::Point { lon, lat, h: self.src.vertical().map_or(z, |v| v.to_metres(z)), t };
         // To ellipsoidal heights, on the source CRS or a geoid model's CRS.
-        let mut start = None;
+        let (mut start, mut geoid) = (None, false);
         for (i, ops) in &h.src.models {
             let q = match &h.src.routes[*i] {
                 Some(r) => r.apply(&self.src, x, y, p0, false),
                 None => Some(p0),
             };
-            if let Some(r) = q.and_then(|q| run_model(ops, q, true)) {
+            if let Some(q) = q
+                && let Some(r) = run_model(ops, q, true)
+            {
                 start = Some((*i, r));
+                geoid = geoid_applies(ops, q);
                 break;
             }
         }
@@ -1424,12 +1454,18 @@ impl Transformer {
         if start.is_none() && self.src.vertical().is_some_and(|v| !v.ballpark) {
             return Err(fail());
         }
+        if self.src.vertical().is_some() && !geoid {
+            self.check_vertical_policy(!h.src.models.is_empty())?;
+        }
         let (i, p) = start.unwrap_or((0, p0));
         let (sx, sy) = if i == 0 { (x, y) } else { (p.lon.to_degrees(), p.lat.to_degrees()) };
         // From ellipsoidal heights to the target.
         for (j, ops) in &h.dst.models {
             let Some(q) = h.middle(i, *j).apply(&h.src.defs[i], sx, sy, p, true) else { continue };
             let Some(r) = run_model(ops, q, false) else { continue };
+            if !geoid_applies(ops, q) {
+                self.check_vertical_policy(true)?;
+            }
             let r = match &h.dst.routes[*j] {
                 Some(route) => route.apply(&h.dst.defs[*j], r.lon.to_degrees(), r.lat.to_degrees(), r, false).ok_or_else(fail)?,
                 None => r,
@@ -1439,6 +1475,9 @@ impl Transformer {
         }
         if self.dst.vertical().is_some_and(|v| !v.ballpark) {
             return Err(fail());
+        }
+        if self.dst.vertical().is_some() {
+            self.check_vertical_policy(!h.dst.models.is_empty())?;
         }
         let q = h.middle(i, 0).apply(&h.src.defs[i], sx, sy, p, true).ok_or_else(fail)?;
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;

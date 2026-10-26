@@ -878,8 +878,11 @@ Warnings report ballparks between different ellipsoids, missing best-operation
 grids (sampled at the first coordinate with default options, with
 `TERRIO_NETWORK=ON` / `TERRIO_GRID_DIR` guidance), and operations used
 outside their area of use. Parallel work aggregates warnings, which appear once
-on stderr and in MCP tool result text. These controls govern horizontal datum
-operation selection; vertical/geoid selection retains its existing behavior.
+on stderr and in MCP tool result text. Heights follow GDAL too: between CRSs with
+heights, keeping a vertical CRS's heights as they are (PROJ's ballpark vertical
+transformation) fails with `ALLOW_BALLPARK=NO`, and with `ONLY_BEST=YES` when a
+geoid model or vertical transformation exists but does not apply (its grid is
+missing, or the point is outside it).
 Point-cloud reprojection currently rejects `--ct-opt` because it does not support
 these controls.
 
