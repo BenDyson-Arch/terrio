@@ -6,9 +6,12 @@
 //! other datum ensembles are written as their datum (`World Geodetic System 1984`, EPSG:6326)
 //! without members; parameters are in degrees and metres rather than the CRS's own units;
 //! projection conversions are named `unknown` (UTM zones excepted); polar axes are east and
-//! north rather than along meridians; axes are named after their direction. CRSs it would
-//! describe wrongly are refused: auxiliary spheres (`+R_C`), planetocentric latitudes and
-//! geographic axes pointing west or south.
+//! north rather than along meridians; axes are named after their direction. Planetary CRSs are
+//! written as PROJ writes them (west axes, planetocentric spherical coordinate systems).
+//!
+//! What it would describe wrongly is refused rather than written: projections on an auxiliary
+//! sphere of an ellipsoid (`+R_C`), and any parameter of the PROJ string the PROJJSON would not
+//! carry, unless it has the value used when it is absent (see [`refuse_unwritten`]).
 
 use serde_json::{Map, Value, json};
 
@@ -137,8 +140,26 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     refuse_misdescribed(&root, &p, &def)?;
     let name = root.name().unwrap_or("unknown").to_string();
     let code = s.epsg.or_else(|| crate::declared_epsg(wkt));
-    let towgs84 = p.list("towgs84").filter(|t| matches!(t.len(), 3 | 7) && code.is_none());
+    // A datum shift the definition gives (`+towgs84`, WKT's TOWGS84) makes a bound CRS, as PROJ
+    // reads it; a CRS made from an EPSG code is written as such (its datum shift is EPSG's).
+    let given = s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj));
+    let towgs84 = match given.and_then(|g| Params::parse(&g).list("towgs84")) {
+        Some(t) if !matches!(t.len(), 3 | 7) => return Err(unsupported(format!("a +towgs84 of {} values", t.len()))),
+        t => t,
+    };
+    let mut written = vec!["towgs84"];
     let datum = datum(base, &p, &def)?;
+    let iau = match (code, s.authority()) {
+        (None, Some(("IAU_2015", n))) => Some(json!({"authority": "IAU", "code": n, "version": 2015})),
+        _ => None,
+    };
+    let with_code = |mut o: Value| match &iau {
+        Some(id) => {
+            o["id"] = id.clone();
+            o
+        }
+        None => with_id(o, code),
+    };
 
     let out = if def.is_geocentric() {
         let unit = length_unit(def.to_meter(), None);
@@ -157,13 +178,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         let mut o = json!({"type": kind, "name": name});
         o["datum"] = datum;
         o["coordinate_system"] = geographic_cs(&root, base, def.has_height(), Some(&p), planetocentric);
-        match (code, s.authority()) {
-            (None, Some(("IAU_2015", n))) => {
-                o["id"] = json!({"authority": "IAU", "code": n, "version": 2015});
-                o
-            }
-            _ => with_id(o, code),
-        }
+        with_code(o)
     } else {
         let base_name = base.name().unwrap_or("unknown");
         let mut b = json!({"type": "GeographicCRS", "name": base_name});
@@ -171,12 +186,15 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         b["coordinate_system"] = geographic_cs(base, base, false, None, false);
         let b = with_id(b, base.epsg());
         let mut o = json!({"type": "ProjectedCRS", "name": name, "base_crs": b});
-        o["conversion"] = conversion(&p)?;
+        let (c, keys) = conversion(&p)?;
+        o["conversion"] = c;
+        written.extend(keys);
         o["coordinate_system"] = projected_cs(&root, def.to_meter(), p.str("axis"));
-        with_id(o, code)
+        with_code(o)
     };
+    refuse_unwritten(&p, &written, entry.is_some())?;
     match towgs84 {
-        Some(t) => Ok(bound(out, &t)),
+        Some(t) => Ok(bound(out, &t, base.name().unwrap_or("unknown"))),
         None => Ok(out),
     }
 }
@@ -186,13 +204,48 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
 /// latitudes with heights. A projected CRS's coordinates do not depend on how its base CRS's
 /// latitudes are given, so a planetocentric base is written.
 fn refuse_misdescribed(root: &Node, p: &Params, def: &Def) -> Result<()> {
-    // The ellipsoid of the PROJ string, before an auxiliary sphere replaces it.
-    let ellipsoidal = crate::datum::ellipsoid(p).map_or(def.ell.es, |e| e.es) != 0.0;
+    // The ellipsoid the PROJ string names, before an auxiliary sphere replaces it: its own
+    // parameters, its datum's, else WGS 84 (as `Def::from_proj` defaults).
+    let named = crate::datum::ellipsoid(p)
+        .or_else(|| p.str("datum").and_then(crate::def::datum_ellps).and_then(crate::math::Ell::named))
+        .unwrap_or_else(crate::math::Ell::wgs84);
+    let ellipsoidal = named.es != 0.0;
     if ellipsoidal && let Some(k) = ["R_A", "R_C", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g"].iter().find(|k| p.has(k)) {
         return Err(unsupported(format!("a projection on an auxiliary sphere (+{k})")));
     }
     if def.is_geographic() && def.has_height() && (p.has("geoc") || spherical_cs(root)) {
         return Err(unsupported("planetocentric latitudes with heights"));
+    }
+    Ok(())
+}
+
+/// The parameters written by other parts than the conversion (ellipsoid, datum, units, axes, prime
+/// meridian), or decided before (auxiliary spheres, planetocentric latitudes).
+const DESCRIBED: &[&str] = &[
+    "proj", "ellps", "datum", "a", "b", "rf", "f", "R", "es", "e", "units", "to_meter", "to_deg", "axis", "pm", "geoc", "no_defs",
+    "wktext", "type", "R_A", "R_C", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g",
+];
+
+/// Refuses a parameter of the PROJ string the PROJJSON does not carry (`written` by the
+/// conversion, or [`DESCRIBED`]), so that nothing is dropped silently, unless it has the value
+/// used when it is absent: 0 for `lat_0`, `lon_0`, `x_0` and `y_0`, 1 for `k` and `k_0`.
+/// `+nadgrids=@null` keeps a datum as it is; an EPSG CRS's datum shift grids are EPSG's.
+fn refuse_unwritten(p: &Params, written: &[&str], epsg: bool) -> Result<()> {
+    for key in p.keys() {
+        let value = p.str(key);
+        let irrelevant = written.contains(&key)
+            || DESCRIBED.contains(&key)
+            || match key {
+                "lat_0" | "lon_0" => p.angle(key) == Some(0.0),
+                "x_0" | "y_0" => p.f64(key) == Some(0.0),
+                "k" | "k_0" => p.f64(key) == Some(1.0),
+                "nadgrids" => epsg || value.is_some_and(|v| v.split(',').all(|g| g.trim_start_matches('@') == "null")),
+                "geoidgrids" => epsg,
+                _ => false,
+            };
+        if !irrelevant {
+            return Err(unsupported(format!("the parameter +{key}{}", value.map(|v| format!("={v}")).unwrap_or_default())));
+        }
     }
     Ok(())
 }
@@ -381,9 +434,11 @@ const LON_ORIGIN: Param = ("Longitude of origin", 8833, 'a');
 const CO_LAT: Param = ("Co-latitude of cone axis", 1036, 'a');
 const LAT_PSEUDO: Param = ("Latitude of pseudo standard parallel", 8818, 'a');
 const K_PSEUDO: Param = ("Scale factor on pseudo standard parallel", 8819, 's');
+const K_ELLIPSOID: Param = ("Ellipsoid scaling factor", 1038, 's');
 
-/// The conversion of a projected CRS's PROJ string, by its EPSG method.
-fn conversion(p: &Params) -> Result<Value> {
+/// The conversion of a projected CRS's PROJ string, by its EPSG method, and the PROJ string's
+/// parameters it carries (see [`refuse_unwritten`]).
+fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
     let proj = p.str("proj").unwrap_or("");
     let deg = |k: &str| p.angle(k).map(f64::to_degrees);
     let num = |k: &str| p.f64(k);
@@ -393,122 +448,180 @@ fn conversion(p: &Params) -> Result<Value> {
     let sphere = !p.has("ellps") && !p.has("datum") && (p.has("R") || (p.has("a") && p.f64("a") == p.f64("b")));
     let mut name = "unknown".to_string();
     let mut conversion_id = None;
-    let (method, code, values): (&str, u32, Vec<(Param, f64)>) = match proj {
+    // The parameters most methods carry.
+    const ORIGIN: &[&str] = &["lat_0", "lon_0", "x_0", "y_0"];
+    const ORIGIN_K: &[&str] = &["lat_0", "lon_0", "k", "k_0", "x_0", "y_0"];
+    const CONIC: &[&str] = &["lat_0", "lon_0", "lat_1", "lat_2", "x_0", "y_0"];
+    let (method, code, values, written): (&str, u32, Vec<(Param, f64)>, &[&str]) = match proj {
         "utm" => {
             let zone = num("zone").ok_or_else(|| unsupported("a UTM projection without zone"))? as u32;
             let south = p.has("south");
             name = format!("UTM zone {zone}{}", if south { "S" } else { "N" });
             conversion_id = Some(if south { 17000 } else { 16000 } + zone);
             let lon = f64::from(zone) * 6.0 - 183.0;
-            (
-                "Transverse Mercator",
-                9807,
-                vec![(LAT_NAT, 0.0), (LON_NAT, lon), (K_NAT, 0.9996), (FE, 500000.0), (FN, if south { 10_000_000.0 } else { 0.0 })],
-            )
+            let values =
+                vec![(LAT_NAT, 0.0), (LON_NAT, lon), (K_NAT, 0.9996), (FE, 500000.0), (FN, if south { 10_000_000.0 } else { 0.0 })];
+            ("Transverse Mercator", 9807, values, &["zone", "south"])
         }
-        "tmerc" => ("Transverse Mercator", 9807, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)]),
+        "tmerc" => ("Transverse Mercator", 9807, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
         "lcc" => {
-            let (sp1, sp2) = (deg("lat_1").unwrap_or(lat0), deg("lat_2"));
-            match sp2 {
-                Some(sp2) if sp2 != sp1 => (
-                    "Lambert Conic Conformal (2SP)",
-                    9802,
-                    vec![(LAT_FALSE, lat0), (LON_FALSE, lon0), (SP1, sp1), (SP2, sp2), (FE_FALSE, x0), (FN_FALSE, y0)],
-                ),
-                _ => ("Lambert Conic Conformal (1SP)", 9801, vec![(LAT_NAT, sp1), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)]),
+            // As PROJ (and terrio) read the CRS: with `lat_0` and no `lat_2`, one standard parallel
+            // (1SP, or variant B away from the origin); else two, the second on the equator
+            // without `lat_2` (2SP, or 2SP Michigan with a scale).
+            let sp1 = deg("lat_1").unwrap_or(0.0);
+            let one = !p.has("lat_2") && p.has("lat_0");
+            if one && lat0 == sp1 {
+                let values = vec![(LAT_NAT, sp1), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)];
+                ("Lambert Conic Conformal (1SP)", 9801, values, &["lat_0", "lat_1", "lon_0", "k", "k_0", "x_0", "y_0"])
+            } else if one {
+                let values = vec![(LAT_NAT, sp1), (K_NAT, k0), (LAT_FALSE, lat0), (LON_FALSE, lon0), (FE_FALSE, x0), (FN_FALSE, y0)];
+                ("Lambert Conic Conformal (1SP variant B)", 1102, values, &["lat_0", "lat_1", "lon_0", "k", "k_0", "x_0", "y_0"])
+            } else {
+                let mut values = vec![
+                    (LAT_FALSE, lat0),
+                    (LON_FALSE, lon0),
+                    (SP1, sp1),
+                    (SP2, deg("lat_2").unwrap_or(0.0)),
+                    (FE_FALSE, x0),
+                    (FN_FALSE, y0),
+                ];
+                if k0 == 1.0 {
+                    ("Lambert Conic Conformal (2SP)", 9802, values, &["lat_0", "lat_1", "lat_2", "lon_0", "k", "k_0", "x_0", "y_0"])
+                } else {
+                    values.push((K_ELLIPSOID, k0));
+                    (
+                        "Lambert Conic Conformal (2SP Michigan)",
+                        1051,
+                        values,
+                        &["lat_0", "lat_1", "lat_2", "lon_0", "k", "k_0", "x_0", "y_0"],
+                    )
+                }
             }
         }
-        "aea" => (
-            "Albers Equal Area",
-            9822,
-            vec![
+        "aea" | "eqdc" => {
+            let values = vec![
                 (LAT_FALSE, lat0),
                 (LON_FALSE, lon0),
                 (SP1, deg("lat_1").unwrap_or(0.0)),
                 (SP2, deg("lat_2").unwrap_or(0.0)),
                 (FE_FALSE, x0),
                 (FN_FALSE, y0),
-            ],
-        ),
-        "eqdc" => (
-            "Equidistant Conic",
-            1119,
-            vec![
-                (LAT_FALSE, lat0),
-                (LON_FALSE, lon0),
-                (SP1, deg("lat_1").unwrap_or(0.0)),
-                (SP2, deg("lat_2").unwrap_or(0.0)),
-                (FE_FALSE, x0),
-                (FN_FALSE, y0),
-            ],
-        ),
-        "laea" if sphere => ("Lambert Azimuthal Equal Area (Spherical)", 1027, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "laea" => ("Lambert Azimuthal Equal Area", 9820, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
+            ];
+            if proj == "aea" { ("Albers Equal Area", 9822, values, CONIC) } else { ("Equidistant Conic", 1119, values, CONIC) }
+        }
+        "laea" if sphere => {
+            ("Lambert Azimuthal Equal Area (Spherical)", 1027, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN)
+        }
+        "laea" => ("Lambert Azimuthal Equal Area", 9820, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         // EPSG:3857: WGS 84 coordinates projected on its semi-major axis's sphere.
-        "merc" if sphere && num("a") == Some(6378137.0) => {
-            ("Popular Visualisation Pseudo Mercator", 1024, vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (FE, x0), (FN, y0)])
+        "merc" if sphere && num("a") == Some(6378137.0) && deg("lat_ts").unwrap_or(0.0) == 0.0 && k0 == 1.0 => {
+            let values = vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (FE, x0), (FN, y0)];
+            ("Popular Visualisation Pseudo Mercator", 1024, values, &["lat_ts", "lon_0", "x_0", "y_0"])
         }
         "merc" => match deg("lat_ts").filter(|t| *t != 0.0) {
-            Some(ts) => ("Mercator (variant B)", 9805, vec![(SP1, ts), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-            None => ("Mercator (variant A)", 9804, vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)]),
+            Some(ts) => {
+                ("Mercator (variant B)", 9805, vec![(SP1, ts), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_ts", "lon_0", "x_0", "y_0"])
+            }
+            None => {
+                let values = vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)];
+                ("Mercator (variant A)", 9804, values, &["lat_ts", "lon_0", "k", "k_0", "x_0", "y_0"])
+            }
         },
         "stere" if lat0.abs() == 90.0 => match deg("lat_ts").filter(|_| !p.has("k") && !p.has("k_0")) {
-            Some(ts) => ("Polar Stereographic (variant B)", 9829, vec![(LAT_TS, ts), (LON_ORIGIN, lon0), (FE, x0), (FN, y0)]),
-            None => ("Polar Stereographic (variant A)", 9810, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)]),
+            Some(ts) => (
+                "Polar Stereographic (variant B)",
+                9829,
+                vec![(LAT_TS, ts), (LON_ORIGIN, lon0), (FE, x0), (FN, y0)],
+                &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"],
+            ),
+            None => {
+                ("Polar Stereographic (variant A)", 9810, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K)
+            }
         },
-        "sterea" => ("Oblique Stereographic", 9809, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)]),
-        "somerc" => (
-            "Hotine Oblique Mercator (variant B)",
-            9815,
-            vec![(LAT_CENTRE, lat0), (LON_CENTRE, lon0), (AZIMUTH, 90.0), (GAMMA, 90.0), (K_CENTRE, k0), (FE_CENTRE, x0), (FN_CENTRE, y0)],
-        ),
+        "sterea" => ("Oblique Stereographic", 9809, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
+        "somerc" => {
+            let values = vec![
+                (LAT_CENTRE, lat0),
+                (LON_CENTRE, lon0),
+                (AZIMUTH, 90.0),
+                (GAMMA, 90.0),
+                (K_CENTRE, k0),
+                (FE_CENTRE, x0),
+                (FN_CENTRE, y0),
+            ];
+            ("Hotine Oblique Mercator (variant B)", 9815, values, ORIGIN_K)
+        }
         "omerc" => {
             let alpha = deg("alpha").ok_or_else(|| unsupported("an oblique Mercator without azimuth"))?;
             let gamma = deg("gamma").unwrap_or(alpha);
             let lonc = deg("lonc").unwrap_or(lon0);
-            if p.has("no_uoff") || p.has("no_off") {
-                (
-                    "Hotine Oblique Mercator (variant A)",
-                    9812,
-                    vec![(LAT_CENTRE, lat0), (LON_CENTRE, lonc), (AZIMUTH, alpha), (GAMMA, gamma), (K_CENTRE, k0), (FE, x0), (FN, y0)],
-                )
+            // `lon_0` is the centre's longitude only without `lonc`.
+            let written: &[&str] = if p.has("lonc") {
+                &["lat_0", "lonc", "alpha", "gamma", "k", "k_0", "x_0", "y_0", "no_uoff", "no_off"]
             } else {
-                (
-                    "Hotine Oblique Mercator (variant B)",
-                    9815,
-                    vec![
-                        (LAT_CENTRE, lat0),
-                        (LON_CENTRE, lonc),
-                        (AZIMUTH, alpha),
-                        (GAMMA, gamma),
-                        (K_CENTRE, k0),
-                        (FE_CENTRE, x0),
-                        (FN_CENTRE, y0),
-                    ],
-                )
+                &["lat_0", "lon_0", "alpha", "gamma", "k", "k_0", "x_0", "y_0", "no_uoff", "no_off"]
+            };
+            if p.has("no_uoff") || p.has("no_off") {
+                let values =
+                    vec![(LAT_CENTRE, lat0), (LON_CENTRE, lonc), (AZIMUTH, alpha), (GAMMA, gamma), (K_CENTRE, k0), (FE, x0), (FN, y0)];
+                ("Hotine Oblique Mercator (variant A)", 9812, values, written)
+            } else {
+                let values = vec![
+                    (LAT_CENTRE, lat0),
+                    (LON_CENTRE, lonc),
+                    (AZIMUTH, alpha),
+                    (GAMMA, gamma),
+                    (K_CENTRE, k0),
+                    (FE_CENTRE, x0),
+                    (FN_CENTRE, y0),
+                ];
+                ("Hotine Oblique Mercator (variant B)", 9815, values, written)
             }
         }
         "krovak" => {
+            // As terrio and PROJ compute it: their defaults, and the co-latitude of the cone axis
+            // and the pseudo standard parallel fixed (`alpha`, `lat_1` and `lat_ts` are ignored).
             let values = vec![
-                (LAT_CENTRE, lat0),
-                (LON_ORIGIN, lon0),
-                (CO_LAT, deg("alpha").unwrap_or(30.288_139_752_777_8)),
-                (LAT_PSEUDO, deg("lat_1").unwrap_or(78.5)),
-                (K_PSEUDO, k0),
+                (LAT_CENTRE, deg("lat_0").unwrap_or(49.5)),
+                (LON_ORIGIN, deg("lon_0").unwrap_or(24.0 + 50.0 / 60.0)),
+                (CO_LAT, 30.288_139_752_777_8),
+                (LAT_PSEUDO, 78.5),
+                (K_PSEUDO, num("k_0").or_else(|| num("k")).unwrap_or(0.9999)),
                 (FE, x0),
                 (FN, y0),
             ];
-            if p.str("axis") == Some("swu") { ("Krovak", 9819, values) } else { ("Krovak (North Orientated)", 1041, values) }
+            let written: &[&str] = &["lat_0", "lon_0", "alpha", "lat_1", "lat_ts", "k", "k_0", "x_0", "y_0"];
+            if p.str("axis") == Some("swu") {
+                ("Krovak", 9819, values, written)
+            } else {
+                ("Krovak (North Orientated)", 1041, values, written)
+            }
         }
-        "cea" => ("Lambert Cylindrical Equal Area", 9835, vec![(SP1, deg("lat_ts").unwrap_or(0.0)), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "eqc" => ("Equidistant Cylindrical", 1028, vec![(SP1, deg("lat_ts").unwrap_or(0.0)), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "cass" => ("Cassini-Soldner", 9806, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "poly" => ("American Polyconic", 9818, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "nzmg" => ("New Zealand Map Grid", 9811, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "aeqd" => ("Azimuthal Equidistant", 1125, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "ortho" => ("Orthographic", 9840, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "eqearth" => ("Equal Earth", 1078, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)]),
-        "bonne" => ("Bonne", 9827, vec![(LAT_NAT, deg("lat_1").unwrap_or(lat0)), (LON_NAT, lon0), (FE, x0), (FN, y0)]),
+        // Its latitude of origin changes nothing (PROJ writes none); a `k_0` without `lat_ts` is
+        // not written.
+        "cea" => {
+            let values = vec![(SP1, deg("lat_ts").unwrap_or(0.0)), (LON_NAT, lon0), (FE, x0), (FN, y0)];
+            ("Lambert Cylindrical Equal Area", 9835, values, &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"])
+        }
+        "eqc" => {
+            // Its latitude of origin as PROJ writes it: only when not 0.
+            let mut values = vec![(SP1, deg("lat_ts").unwrap_or(0.0)), (LON_NAT, lon0), (FE, x0), (FN, y0)];
+            if lat0 != 0.0 {
+                values.insert(1, (LAT_NAT, lat0));
+            }
+            ("Equidistant Cylindrical", 1028, values, &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"])
+        }
+        "cass" => ("Cassini-Soldner", 9806, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "poly" => ("American Polyconic", 9818, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "nzmg" => ("New Zealand Map Grid", 9811, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "aeqd" => ("Azimuthal Equidistant", 1125, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "ortho" => ("Orthographic", 9840, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "eqearth" => ("Equal Earth", 1078, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)], &["lon_0", "x_0", "y_0"]),
+        "bonne" => {
+            // Its parallel is `lat_1`; `lat_0` changes nothing then.
+            let values = vec![(LAT_NAT, deg("lat_1").unwrap_or(lat0)), (LON_NAT, lon0), (FE, x0), (FN, y0)];
+            ("Bonne", 9827, values, if p.has("lat_1") { &["lat_0", "lat_1", "lon_0", "x_0", "y_0"] } else { ORIGIN })
+        }
         other => return Err(unsupported(format!("the projection +proj={other}"))),
     };
     let parameters: Vec<Value> = values
@@ -522,11 +635,14 @@ fn conversion(p: &Params) -> Result<Value> {
             json!({"name": pname, "value": value, "unit": unit, "id": id(pcode)})
         })
         .collect();
-    Ok(with_id(json!({"name": name, "method": {"name": method, "id": id(code)}, "parameters": parameters}), conversion_id))
+    Ok((
+        with_id(json!({"name": name, "method": {"name": method, "id": id(code)}, "parameters": parameters}), conversion_id),
+        written.to_vec(),
+    ))
 }
 
 /// A bound CRS: `source` with its transformation to WGS 84, as PROJ writes `+towgs84`.
-fn bound(source: Value, t: &[f64]) -> Value {
+fn bound(source: Value, t: &[f64], geographic: &str) -> Value {
     // PROJ knows "metre", "degree" and "unity" by name; other units are objects.
     let arc_second = json!({"type": "AngularUnit", "name": "arc-second", "conversion_factor": DEGREE / 3600.0});
     let ppm = json!({"type": "ScaleUnit", "name": "parts per million", "conversion_factor": 1e-6});
@@ -561,6 +677,6 @@ fn bound(source: Value, t: &[f64]) -> Value {
         "type": "BoundCRS",
         "source_crs": source,
         "target_crs": target,
-        "transformation": {"name": "Transformation from unknown to WGS84", "method": {"name": method, "id": id(code)}, "parameters": parameters},
+        "transformation": {"name": format!("Transformation from {geographic} to WGS84"), "method": {"name": method, "id": id(code)}, "parameters": parameters},
     })
 }

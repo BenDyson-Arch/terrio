@@ -82,6 +82,40 @@ fn planetographic_and_planetocentric_crss() {
 }
 
 #[test]
+fn methods_and_parameters_follow_proj() {
+    // `$schema` first, as PROJ writes it.
+    assert!(SpatialRef::from_epsg(4326).unwrap().to_projjson().unwrap().starts_with(r#"{"$schema":"#));
+    // LCC as PROJ 9.9 reads the PROJ string: with lat_0 and no lat_2, 1SP (variant B away from
+    // the origin); else 2SP, Michigan with a scale.
+    let lcc = |d: &str| method(&export(&format!("+proj=lcc {d} +ellps=WGS84"))["conversion"]);
+    assert_eq!(lcc("+lat_0=40 +lat_1=40").0, 9801);
+    assert_eq!(lcc("+lat_1=45 +lat_0=40"), (1102, vec![(8801, 45.0), (8805, 1.0), (8821, 40.0), (8822, 0.0), (8826, 0.0), (8827, 0.0)]));
+    assert_eq!(
+        lcc("+lat_0=30 +lat_1=40 +lat_2=40"),
+        (9802, vec![(8821, 30.0), (8822, 0.0), (8823, 40.0), (8824, 40.0), (8826, 0.0), (8827, 0.0)])
+    );
+    assert_eq!(lcc("+lat_1=33 +k_0=0.99").0, 1051);
+    // eqc's latitude of origin (PROJ's 8801); Krovak's defaults and fixed angles, as terrio and
+    // PROJ compute it.
+    assert!(method(&export("+proj=eqc +lat_0=10 +lat_ts=30 +ellps=WGS84")["conversion"]).1.contains(&(8801, 10.0)));
+    let krovak = vec![(8811, 49.5), (8833, 24.833333333), (1036, 30.288139753), (8818, 78.5), (8819, 0.9999), (8806, 0.0), (8807, 0.0)];
+    assert_eq!(method(&export("+proj=krovak +ellps=bessel")["conversion"]), (1041, krovak));
+    // A projected IAU CRS's identifier.
+    assert_eq!(export("IAU_2015:49911")["id"], json!({"authority": "IAU", "code": 49911, "version": 2015}));
+}
+
+#[test]
+fn datum_shifts_are_bound_as_proj_binds_them() {
+    // An EPSG CRS is written as such; a WKT with TOWGS84 (and its code) is bound, the
+    // transformation named after its geographic CRS.
+    assert_eq!(export("EPSG:31467")["type"], "ProjectedCRS");
+    let wkt = r#"PROJCS["DHDN / 3-degree Gauss-Kruger zone 3",GEOGCS["DHDN",DATUM["Deutsches_Hauptdreiecksnetz",SPHEROID["Bessel 1841",6377397.155,299.1528128],TOWGS84[598.1,73.7,418.2,0.202,0.045,-2.455,6.7]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",9],PARAMETER["scale_factor",1],PARAMETER["false_easting",3500000],PARAMETER["false_northing",0],UNIT["metre",1],AUTHORITY["EPSG","31467"]]"#;
+    let v: Value = serde_json::from_str(&SpatialRef::from_wkt(wkt).to_projjson().unwrap()).unwrap();
+    assert_eq!((&v["type"], &v["source_crs"]["id"]["code"]), (&json!("BoundCRS"), &json!(31467)));
+    assert_eq!(v["transformation"]["name"], "Transformation from DHDN to WGS84");
+}
+
+#[test]
 fn what_would_be_written_wrongly_is_refused() {
     let refusal = |d: &str| SpatialRef::parse(d).unwrap().to_projjson().unwrap_err().to_string();
     assert!(SpatialRef::from_epsg(9000).unwrap().to_projjson().unwrap_err().to_string().contains("dynamic"));
@@ -89,8 +123,25 @@ fn what_would_be_written_wrongly_is_refused() {
     // A projection on the conformal or authalic sphere of an ellipsoid (IAU_2015:19991).
     assert!(refusal("+proj=merc +R_C +lat_0=0 +lon_0=0 +a=2440530 +b=2438260").contains("auxiliary sphere"));
     assert!(refusal("+proj=laea +R_A +lat_0=52 +lon_0=10 +ellps=GRS80").contains("auxiliary sphere"));
+    // With the ellipsoid of a datum, or WGS 84 by default, too.
+    for d in ["+proj=laea +R_A +lat_0=52 +lon_0=10 +datum=WGS84", "+proj=laea +R_A +lat_0=52 +lon_0=10"] {
+        assert!(refusal(d).contains("auxiliary sphere"), "{d}");
+    }
     // On a sphere, the auxiliary sphere is the sphere: written.
     assert!(SpatialRef::parse("+proj=merc +R_C +R=696000000").unwrap().to_projjson().is_ok());
+    assert!(refusal("+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6").contains("+towgs84 of 6 values"));
+}
+
+#[test]
+fn parameters_it_would_not_write_are_refused() {
+    // Any parameter of the PROJ definition the PROJJSON does not carry is named and refused,
+    // unless it has the value used when it is absent.
+    let refusal = |d: &str| SpatialRef::parse(d).unwrap().to_projjson().unwrap_err().to_string();
+    assert!(refusal("+proj=tmerc +ellps=WGS84 +foo=3").contains("the parameter +foo=3"));
+    assert!(refusal("+proj=longlat +lon_0=10 +datum=WGS84").contains("the parameter +lon_0=10"));
+    assert!(refusal("+proj=cea +k_0=0.5 +ellps=WGS84").contains("the parameter +k_0=0.5"));
+    assert!(refusal("+proj=krovak +czech +ellps=bessel").contains("the parameter +czech"));
+    assert!(SpatialRef::parse("+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=WGS84").unwrap().to_projjson().is_ok());
 }
 
 #[test]
@@ -102,6 +153,7 @@ fn projjson_reads_back_as_the_same_crs() {
         ("EPSG:4326", (10.0, 50.0)),
         ("EPSG:32632", (500000.0, 5500000.0)),
         ("EPSG:2154", (650000.0, 6860000.0)),
+        ("+proj=lcc +lat_0=30 +lat_1=40 +lat_2=40 +ellps=WGS84", (100000.0, 200000.0)),
         ("+proj=longlat +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7", (8.0, 47.0)),
         // West-positive projected axes, as IAU_2015 planetographic projected CRSs have them.
         ("+proj=tmerc +lat_0=0 +lon_0=10 +k=1 +ellps=WGS84 +axis=wnu", (-100000.0, 5000000.0)),

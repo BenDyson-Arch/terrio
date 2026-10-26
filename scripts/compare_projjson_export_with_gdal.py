@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare terrio's PROJJSON export (`SpatialRef::to_projjson`) with live PROJ and GDAL.
 
-45 CRSs are compared with PROJ's PROJJSON by meaning (types, identifiers, datums, ellipsoids,
+52 CRSs are compared with PROJ's PROJJSON by meaning (types, identifiers, datums, ellipsoids,
 prime meridians, axes, methods and parameters by EPSG code in SI units) and read by GDAL, whose
 transformation of a point must match the original CRS's within 1e-8 degrees. Every IAU_2015 CRS is
 exported and read by GDAL the same way, reported per body; the only refusals allowed there are
@@ -36,6 +36,22 @@ DEFINITIONS = [
     # Bound.
     '+proj=utm +zone=33 +ellps=intl +towgs84=-87,-98,-121',
     '+proj=longlat +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7',
+    # Reviewed cases (#311): LCC's method and origin, eqc's and cea's lat_0, Krovak's defaults, a
+    # WKT with its code and TOWGS84.
+    '+proj=lcc +lat_0=30 +lat_1=40 +lat_2=40 +ellps=WGS84', '+proj=lcc +lat_1=45 +lat_0=40 +ellps=WGS84',
+    '+proj=lcc +lat_1=33 +k_0=0.99 +ellps=WGS84', '+proj=eqc +lat_0=10 +lat_ts=30 +ellps=WGS84',
+    '+proj=cea +lat_0=10 +lat_ts=30 +ellps=WGS84', '+proj=krovak +ellps=bessel',
+    'PROJCS["DHDN / 3-degree Gauss-Kruger zone 3",GEOGCS["DHDN",DATUM["Deutsches_Hauptdreiecksnetz",SPHEROID["Bessel 1841",'
+    '6377397.155,299.1528128],TOWGS84[598.1,73.7,418.2,0.202,0.045,-2.455,6.7]],PRIMEM["Greenwich",0],UNIT["degree",'
+    '0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",9],'
+    'PARAMETER["scale_factor",1],PARAMETER["false_easting",3500000],PARAMETER["false_northing",0],UNIT["metre",1],'
+    'AUTHORITY["EPSG","31467"]]',
+]
+# What terrio's PROJJSON would describe wrongly, so must refuse: auxiliary spheres of an ellipsoid
+# named by a datum or by default, a +towgs84 of 6 values, parameters it does not write.
+REFUSED = [
+    '+proj=laea +R_A +lat_0=52 +lon_0=10 +datum=WGS84', '+proj=laea +R_A +lat_0=52 +lon_0=10',
+    '+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6', '+proj=cea +k_0=0.5 +ellps=WGS84', '+proj=longlat +lon_0=10 +datum=WGS84',
 ]
 ALLOWED_REFUSALS = ('no PROJJSON for the projection', 'no PROJJSON for a projection on an auxiliary sphere')
 
@@ -122,7 +138,7 @@ def main():
     database = next(Path(p) / 'proj.db' for p in osr.GetPROJSearchPaths() if (Path(p) / 'proj.db').is_file())
     with sqlite3.connect(f'file:{database}?mode=ro', uri=True) as db:
         iau = [f'IAU_2015:{c}' for (c,) in db.execute("SELECT code FROM crs_view WHERE auth_name = 'IAU_2015' ORDER BY CAST(code AS INTEGER)")]
-    ours = export(DEFINITIONS + iau)
+    ours = export(DEFINITIONS + REFUSED + iau)
     results = []
     wgs84 = srs('EPSG:4326')
     for definition in DEFINITIONS:
@@ -137,9 +153,14 @@ def main():
             area = original.GetAreaOfUse()
             point = ((area.west_lon_degree + area.east_lon_degree) / 2, (area.south_lat_degree + area.north_lat_degree) / 2) if area else (10.0, 50.0)
             d = difference(back, original, wgs84, [point, (10.0, 50.0)]) if original.IsProjected() or original.IsGeographic() else 0.0
-            results.append(dict(group='45 CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status=status(d), detail=f'{d:.3g} degrees' if d else ''))
+            results.append(dict(group='CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status=status(d), detail=f'{d:.3g} degrees' if d else ''))
         except Exception as error:
-            results.append(dict(group='45 CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status='differs', detail=str(error)))
+            results.append(dict(group='CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status='differs', detail=str(error)))
+    for definition in REFUSED:
+        r = ours[definition]
+        ok = 'error' in r
+        results.append(dict(group='Refused (would be described wrongly)', name=definition, status='identical' if ok else 'differs',
+                            detail=r['error'] if ok else 'written'))
     bodies = defaultdict(lambda: dict(written=0, refused=0, worst=0.0, bad=[]))
     points = [(10, 20), (0, 85), (0, -85), (90, 60), (-90, -60), (180, 0), (45, 45)]
     for code in iau:
