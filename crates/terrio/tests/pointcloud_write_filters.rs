@@ -471,7 +471,12 @@ fn check_hierarchy(dir: &std::path::Path) -> std::collections::BTreeMap<String, 
         let points = match kind.as_str() {
             "laszip" => pointcloud::open_points(tile("laz").to_str().unwrap()).unwrap().header().point_count,
             "binary" => std::fs::metadata(tile("bin")).unwrap().len() / rl,
-            _ => zstd::decode_all(&std::fs::read(tile("zst")).unwrap()[..]).unwrap().len() as u64 / rl,
+            _ => {
+                let mut out = Vec::new();
+                let zst = std::fs::read(tile("zst")).unwrap();
+                std::io::Read::read_to_end(&mut ruzstd::decoding::StreamingDecoder::new(&zst[..]).unwrap(), &mut out).unwrap();
+                out.len() as u64 / rl
+            }
         };
         assert_eq!(points, *n, "node {k}");
         let p: Vec<i64> = k.split('-').map(|v| v.parse().unwrap()).collect();

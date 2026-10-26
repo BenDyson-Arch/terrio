@@ -1071,7 +1071,7 @@ impl EptAppender {
                 out
             }
             (_, EptDataType::Zstandard) => {
-                zstd::decode_all(&bytes[..]).map_err(|e| Error::InvalidData(format!("EPT tile {}: {e}", key_name(key))))?
+                crate::zstandard::decompress(&bytes).map_err(|e| Error::InvalidData(format!("EPT tile {}: {e}", key_name(key))))?
             }
             _ => bytes,
         };
@@ -1085,7 +1085,7 @@ impl EptAppender {
     fn write_tile(&mut self, ctx: &mut Ctx, key: VoxelKey, records: &[u8]) -> Result<()> {
         let bytes = match &self.codec {
             Codec::Las { header, layout } => super::ept_write::las_bytes(header, layout, records, true)?,
-            Codec::Schema if self.data_type == EptDataType::Zstandard => zstd::bulk::compress(records, 3)?,
+            Codec::Schema if self.data_type == EptDataType::Zstandard => crate::zstandard::compress(records, 3)?,
             Codec::Schema => records.to_vec(),
         };
         write_synced(&tile_path(&ctx.stage, key, self.data_type), &bytes)?;

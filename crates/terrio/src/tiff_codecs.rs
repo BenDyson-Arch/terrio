@@ -1,6 +1,7 @@
 //! TIFF compressions the `tiff` crate does not decode, read as GDAL (libtiff) reads them: LERC
-//! (alone, or wrapped in Deflate or Zstandard), JPEG XL and LZMA, and Zstandard in WebAssembly
-//! (where the crate's Zstandard, a C library, is left out). And JPEG, decoded as libjpeg
+//! (alone, or wrapped in Deflate or Zstandard), JPEG XL and LZMA, and Zstandard without the
+//! `libzstd` feature and in WebAssembly (where the crate's Zstandard, a C library, is left out).
+//! And JPEG, decoded as libjpeg
 //! decodes it for GDAL ([`crate::jpeg`]), YCbCr converted to RGB. And unsigned samples packed in
 //! 9 to 31 bits (GDAL's `NBITS`, as written for Sentinel-2's 15-bit bands), in any of the
 //! lossless compressions, read as UInt16 or UInt32 as GDAL reads them. And pixel-interleaved RGB
@@ -28,7 +29,7 @@ enum Codec {
     Lerc,
     Jxl,
     Lzma,
-    /// Zstandard, in WebAssembly builds: the `tiff` crate decodes it elsewhere.
+    /// Zstandard, with `ruzstd`: the `tiff` crate decodes it with the `libzstd` feature, natively.
     Zstd,
     /// LZW of 8 to 64-bit samples, decoded whole: the `tiff` crate's reader fails on some chunks
     /// it reads row by row (edge tiles narrower than the tile).
@@ -189,7 +190,7 @@ fn invalid(msg: impl Into<String>) -> TiffError {
 }
 
 /// The error of a compression this build leaves out: terrio was built without `feature`.
-#[cfg(not(all(feature = "lerc", feature = "lzma")))]
+#[cfg(not(all(feature = "lerc", feature = "lzma", any(target_family = "wasm", feature = "libzstd"))))]
 fn disabled(feature: &str) -> TiffError {
     TiffError::IoError(std::io::Error::new(std::io::ErrorKind::Unsupported, format!("built without the `{feature}` feature")))
 }
@@ -244,7 +245,7 @@ impl ChunkCodec {
             LERC => Codec::Lerc,
             JXL | JXL_DNG => Codec::Jxl,
             LZMA => Codec::Lzma,
-            ZSTD if cfg!(target_family = "wasm") => Codec::Zstd,
+            ZSTD if cfg!(any(target_family = "wasm", not(feature = "libzstd"))) => Codec::Zstd,
             5 => Codec::Lzw,
             7 => Codec::Jpeg,
             50001 => Codec::WebP,
@@ -268,6 +269,11 @@ impl ChunkCodec {
         // LZW and Zstandard: other sample types, and WhiteIsZero images (which the crate
         // inverts), are left to the `tiff` crate.
         if matches!(codec, Codec::Lzw | Codec::Zstd | Codec::Chunky(_)) && (Sample::new(format, bits).is_none() || photometric == Some(0)) {
+            // Natively, the crate decodes Zstandard with the `libzstd` feature only.
+            #[cfg(not(any(target_family = "wasm", feature = "libzstd")))]
+            if codec == Codec::Zstd {
+                return Err(disabled("libzstd"));
+            }
             return Ok(None);
         }
         let sample = match codec {
@@ -893,6 +899,24 @@ mod tests {
             let back: Vec<f32> = out.as_chunks::<4>().0.iter().map(|c| f32::from_ne_bytes(*c)).collect();
             assert_eq!(back, values, "big endian {big_endian}");
         }
+    }
+
+    /// Zstandard chunks decode with `ruzstd` (without the `libzstd` feature, and in WebAssembly),
+    /// whichever encoder wrote them.
+    #[test]
+    fn zstandard_chunks_decode_in_pure_rust() {
+        let c = ChunkCodec { codec: Codec::Zstd, ..lzw(Sample::U16, 1, 2, false) };
+        // A 4 x 4 UInt16 ramp, differenced by row (predictor 2).
+        let rows: Vec<u8> =
+            (0..4u16).flat_map(|r| (0..4u16).map(move |i| if i == 0 { r * 100 } else { 3 })).flat_map(u16::to_ne_bytes).collect();
+        let want: Vec<u8> = (0..4u16).flat_map(|r| (0..4u16).map(move |i| r * 100 + 3 * i)).flat_map(u16::to_ne_bytes).collect();
+        assert_eq!(c.lossless(crate::zstandard::compress(&rows, 9).unwrap(), 4, 4).unwrap(), want);
+        assert_eq!(
+            c.lossless(ruzstd::encoding::compress_to_vec(&rows[..], ruzstd::encoding::CompressionLevel::Fastest), 4, 4).unwrap(),
+            want
+        );
+        // A short stream is an error.
+        assert!(c.lossless(crate::zstandard::compress(&rows[..8], 9).unwrap(), 4, 4).is_err());
     }
 
     /// A truncated LZW chunk is an error, and a header's chunk size overflowing is refused.
