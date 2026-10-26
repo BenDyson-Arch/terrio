@@ -555,7 +555,7 @@ pub(crate) type FileDecoder = tiff::decoder::Decoder<PatchedReader<std::io::BufR
 pub(crate) fn open_decoder(path: &std::path::Path, tags: &GeoTags) -> crate::Result<FileDecoder> {
     let file = PatchedReader::new(std::io::BufReader::new(std::fs::File::open(path)?), tags);
     let dec = tiff::decoder::Decoder::new(file).map_err(|e| crate::Error::InvalidData(format!("{}: {e}", path.display())))?;
-    Ok(dec.with_limits(tiff::decoder::Limits::unlimited()))
+    Ok(dec.with_limits(crate::cog::TiffReadLimits::default().tiff()))
 }
 
 /// Opens another decoder over the same TIFF (a local file, or bytes in memory), for decoding
