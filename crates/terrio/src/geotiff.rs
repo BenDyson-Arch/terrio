@@ -423,6 +423,15 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
             out.epsg = out.crs.as_ref().and_then(|c| c.epsg);
         }
     }
+    // A vertical CRS (VerticalCSTypeGeoKey) on an EPSG horizontal CRS: the compound CRS, as GDAL
+    // reads it (EPSG:4326 with EGM96 heights is `EPSG:4326+5773`).
+    if let Some(h) = out.epsg
+        && let Some(v) = short_key(4096).filter(|c| *c != 0 && *c != 32767)
+        && let Ok(c) = crate::crs::SpatialRef::compound(h, u32::from(v))
+    {
+        out.epsg = None;
+        out.crs = Some(c.to_crs_info());
+    }
 }
 
 impl GeoTags {
@@ -891,6 +900,35 @@ mod tests {
         assert_eq!(color_interpretation("not a color &amp; role"), "Undefined");
         assert_eq!(parse_gdal_metadata(xml), [("title".into(), "a<b &lt;literal".into())]);
         assert_eq!(parse_gdal_band_metadata(xml), [(1, "note".into(), "c&d &amp;literal".into())]);
+    }
+
+    #[test]
+    fn vertical_geokeys_make_a_compound_crs() {
+        // The GeoKeys GDAL 3.13 writes for EPSG:4326+5773: geographic, PixelIsArea, 4326, 5773.
+        let keys = [1, 1, 0, 4, 1024, 0, 1, 2, 1025, 0, 1, 1, 2048, 0, 1, 4326, 4096, 0, 1, 5773];
+        let crs = crate::crs::SpatialRef::from_raster_crs(&crs_from_geokeys(&keys, None, None));
+        assert!(crs.to_wkt().unwrap().starts_with("COMPD_CS[\"WGS 84 + EGM96 height\","), "{crs:?}");
+        // Not identified as its horizontal CRS, which would drop the vertical CRS again.
+        assert_eq!(crs.epsg, None);
+        assert!(crs.same_as(&crate::crs::SpatialRef::parse("EPSG:4326+5773").unwrap()));
+        // Heights are EGM96 heights: WGS 84 ellipsoidal heights differ by the geoid undulation.
+        let t = crate::crs::Transformer::new(&crs, &crate::crs::SpatialRef::from_epsg(4979).unwrap()).unwrap();
+        let direct = crate::crs::Transformer::new(
+            &crate::crs::SpatialRef::parse("EPSG:4326+5773").unwrap(),
+            &crate::crs::SpatialRef::from_epsg(4979).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(t.transform_3d(153.0, -27.0, 0.0).ok(), direct.transform_3d(153.0, -27.0, 0.0).ok());
+        // Without the vertical key, or with an unknown or user-defined one: the horizontal CRS.
+        for v in [None, Some(32767), Some(1)] {
+            let mut keys = keys[..16].to_vec();
+            keys[3] = 3;
+            if let Some(v) = v {
+                keys.extend([4096, 0, 1, v]);
+                keys[3] = 4;
+            }
+            assert_eq!(crs_from_geokeys(&keys, None, None).epsg, Some(4326), "{v:?}");
+        }
     }
 
     #[test]
