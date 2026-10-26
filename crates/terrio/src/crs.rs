@@ -122,6 +122,7 @@ impl SpatialRef {
         initialize();
         terrio_crs::SpatialRef::from_projjson(text).map(Into::into).map_err(Into::into)
     }
+
     /// The CRS as PROJJSON v0.7 (see the standalone engine's `SpatialRef::to_projjson`).
     pub fn to_projjson(&self) -> Result<String> {
         initialize();

@@ -31,6 +31,9 @@ fn geographic_and_geocentric_crss() {
     let e = &v["datum"]["ellipsoid"];
     assert_eq!((e["semi_major_axis"].as_f64(), e["inverse_flattening"].as_f64()), (Some(6378137.0), Some(298.257223563)));
     assert_eq!(directions(&v["coordinate_system"]), ["north", "east"]);
+    // The ensembles are written as their datum, under its official name.
+    assert_eq!(v["datum"]["name"], "World Geodetic System 1984");
+    assert_eq!(export("EPSG:4258")["datum"]["name"], "European Terrestrial Reference System 1989");
     assert_eq!(directions(&export("EPSG:4979")["coordinate_system"]), ["north", "east", "up"]);
     let v = export("EPSG:4978");
     assert_eq!((&v["type"], &v["coordinate_system"]["subtype"]), (&json!("GeodeticCRS"), &json!("Cartesian")));
@@ -120,6 +123,8 @@ fn what_would_be_written_wrongly_is_refused() {
     let refusal = |d: &str| SpatialRef::parse(d).unwrap().to_projjson().unwrap_err().to_string();
     assert!(SpatialRef::from_epsg(9000).unwrap().to_projjson().unwrap_err().to_string().contains("dynamic"));
     assert!(refusal("+proj=robin +datum=WGS84").contains("+proj=robin"));
+    // UTM zones are 1 to 60 (terrio refuses others before writing, as PROJ does).
+    assert!(SpatialRef::parse("+proj=utm +zone=61 +datum=WGS84").and_then(|s| s.to_projjson()).is_err());
     // A projection on the conformal or authalic sphere of an ellipsoid (IAU_2015:19991).
     assert!(refusal("+proj=merc +R_C +lat_0=0 +lon_0=0 +a=2440530 +b=2438260").contains("auxiliary sphere"));
     assert!(refusal("+proj=laea +R_A +lat_0=52 +lon_0=10 +ellps=GRS80").contains("auxiliary sphere"));

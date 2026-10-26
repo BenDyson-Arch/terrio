@@ -455,6 +455,9 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
     let (method, code, values, written): (&str, u32, Vec<(Param, f64)>, &[&str]) = match proj {
         "utm" => {
             let zone = num("zone").ok_or_else(|| unsupported("a UTM projection without zone"))? as u32;
+            if !(1..=60).contains(&zone) {
+                return Err(unsupported(format!("a UTM projection of zone {zone}")));
+            }
             let south = p.has("south");
             name = format!("UTM zone {zone}{}", if south { "S" } else { "N" });
             conversion_id = Some(if south { 17000 } else { 16000 } + zone);
