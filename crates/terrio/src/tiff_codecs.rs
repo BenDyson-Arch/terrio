@@ -1,13 +1,12 @@
 //! TIFF compressions the `tiff` crate does not decode, read as GDAL (libtiff) reads them: LERC
 //! (alone, or wrapped in Deflate or Zstandard), JPEG XL and LZMA, and Zstandard without the
-//! `libzstd` feature and in WebAssembly (where the crate's Zstandard, a C library, is left out).
-//! And JPEG, decoded as libjpeg
-//! decodes it for GDAL ([`crate::jpeg`]), YCbCr converted to RGB. And unsigned samples packed in
-//! 9 to 31 bits (GDAL's `NBITS`, as written for Sentinel-2's 15-bit bands), in any of the
-//! lossless compressions, read as UInt16 or UInt32 as GDAL reads them. And pixel-interleaved RGB
-//! or CMYK with samples besides the color ones and an alpha (NAIP's near-infrared band, as
-//! `gdalwarp` and the Planetary Computer's COGs store it), which the crate reads with too few
-//! samples per pixel.
+//! `libzstd` feature (the crate's Zstandard, a C library) and in WebAssembly. And JPEG, decoded as
+//! libjpeg decodes it for GDAL ([`crate::jpeg`]), YCbCr converted to RGB. And unsigned samples
+//! packed in 9 to 31 bits (GDAL's `NBITS`, as written for Sentinel-2's 15-bit bands), in any of the
+//! lossless compressions, read as UInt16 or UInt32 as GDAL reads them. And pixel-interleaved RGB or
+//! CMYK with samples besides the color ones and an alpha (NAIP's near-infrared band, as `gdalwarp`
+//! and the Planetary Computer's COGs store it), which the crate reads with too few samples per
+//! pixel.
 
 use std::io::{Read, Seek, SeekFrom};
 use tiff::decoder::{ChunkType, Decoder, DecodingResult};

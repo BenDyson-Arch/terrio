@@ -313,10 +313,10 @@ impl LazyRaster {
     }
 
     /// The files the dataset is read from, as GDAL's `GetFileList` lists them: for a GeoTIFF, the
-    /// file as it was named (a path, URL or archive member), the `.aux.xml` sidecar whose CRS or
-    /// nodata it took and the `.msk` sidecar mask; the files of a VRT or catalog's sources. Empty
-    /// for rasters in memory or read from a [`crate::sparse::SparseFile`]. Unlike GDAL's, the
-    /// list has no `.ovr` (terrio does not read them) or RPC sidecar.
+    /// file as it was named (a path, URL or archive member), the `.ovr` whose overviews it took,
+    /// the `.msk` sidecar mask and the `.aux.xml` sidecar whose CRS or nodata it took; the files
+    /// of a VRT or catalog's sources. Empty for rasters in memory or read from a
+    /// [`crate::sparse::SparseFile`]. Unlike GDAL's, the list has no RPC sidecar.
     pub fn file_list(&self) -> Result<Vec<String>> {
         let mut files = match &self.inner {
             Inner::Tiff(t) => t.files.clone(),
@@ -1356,7 +1356,6 @@ pub(crate) fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window
     }
 }
 
-/// The pixel type of the decoder's current image, from `BitsPerSample` and `SampleFormat`.
 /// [`RasterData::new_filled`], or an error when the samples cannot be allocated: a header can
 /// declare an image of terabytes, whose full window would abort the process.
 fn try_new_filled(data_type: DataType, len: usize, value: f64) -> Result<RasterData> {
@@ -1380,6 +1379,7 @@ fn try_new_filled(data_type: DataType, len: usize, value: f64) -> Result<RasterD
     })
 }
 
+/// The pixel type of the decoder's current image, from `BitsPerSample` and `SampleFormat`.
 fn sample_type<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<DataType> {
     let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
     let format = dec.find_tag_unsigned_vec::<u16>(Tag::SampleFormat).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
