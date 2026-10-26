@@ -933,6 +933,7 @@ PROJ_CASES = {
         "unsupported_projections_are_refused_in_every_encoding": "The projections terrio does not implement, refused as WKT too",
         "pyproj_wkt_matches_proj": "The same CRSs as pyproj's WKT1_GDAL and WKT2_2019 (known differences: #119, #156)",
         "own_wkt_reads_back_as_the_same_crs": "The same CRSs through the WKT terrio writes, read back by terrio",
+        "longlat_longitudes_are_relative_to_lon_0": "Geographic PROJ strings with `+lon_0` (`longlat`, `latlong`, `+pm`, `+towgs84`): seven GDAL 3.13.3 points",
     },
 }
 

@@ -676,9 +676,11 @@ impl Def {
     }
 
     /// Whether PROJ's ballpark transformation to `other` is a longitude rotation alone (both on
-    /// one ellipsoid, with different prime meridians), which PROJ gives an accuracy of 0 m.
+    /// one ellipsoid, with different prime meridians), which PROJ gives an accuracy of 0 m. Not
+    /// for a geographic CRS with `+lon_0`, a PROJ-string CRS PROJ gives no accuracy to.
     pub fn rotation_only_to(&self, other: &Def) -> bool {
-        self.ell.a == other.ell.a && self.ell.es == other.ell.es && self.pm != other.pm
+        let lon_0 = |d: &Def| d.is_geographic() && d.lam0 != 0.0;
+        self.ell.a == other.ell.a && self.ell.es == other.ell.es && self.pm != other.pm && !lon_0(self) && !lon_0(other)
     }
 
     /// The datum transformations to WGS 84, in the order they are tried.
