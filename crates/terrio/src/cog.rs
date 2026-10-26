@@ -558,6 +558,17 @@ impl LazyRaster {
         }
     }
 
+    /// The bits of a sample as a TIFF stores them (its `BitsPerSample`); `None` for other
+    /// sources. Samples may be read as a wider [`LazyRaster::data_type`], as GDAL reads them:
+    /// Float16 (16 bits, read as Float32; GDAL's Float16) and unsigned samples of 1 to 7 or 9 to
+    /// 31 bits (GDAL's `NBITS`).
+    pub fn sample_bits(&self) -> Option<u16> {
+        match &self.inner {
+            Inner::Tiff(t) => Some(t.bits),
+            Inner::Memory(_) | Inner::Source(..) => None,
+        }
+    }
+
     /// The driver.
     pub fn driver(&self) -> RasterDriver {
         match &self.inner {
@@ -1063,6 +1074,8 @@ struct TiffRaster {
     tags: GeoTags,
     bands: usize,
     data_type: DataType,
+    /// `BitsPerSample` of the full-resolution image.
+    bits: u16,
     geo_transform: [f64; 6],
     /// The full-resolution image, then the overviews, largest first.
     levels: Vec<Level>,
@@ -1106,6 +1119,7 @@ impl TiffRaster {
         let (w, h) = dec.dimensions().map_err(tiff_err)?;
         let bands = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
         let data_type = sample_type(&mut dec)?;
+        let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level { ifd: 0, width: w as usize, height: h as usize, block: (cw as usize, ch as usize), external: None }];
         let mut ifd = 1;
@@ -1136,6 +1150,7 @@ impl TiffRaster {
             tags,
             bands,
             data_type,
+            bits,
             geo_transform,
             levels,
             masks,
