@@ -460,6 +460,20 @@ impl LazyRaster {
         }
     }
 
+    /// The RPCs of a GeoTIFF, as GDAL reads them: its `RPCCoefficientTag`, else (for a local
+    /// file) a `_RPC.TXT` or `.RPB` sidecar. Also for GeoTIFFs in memory and sparse ones, which
+    /// have the tag alone. `None` without RPCs, and for other formats.
+    pub fn rpc(&self) -> Result<Option<crate::ops::rpc::Rpc>> {
+        let Inner::Tiff(t) = &self.inner else { return Ok(None) };
+        if let Some(tag) = &t.tags.rpc {
+            return crate::ops::rpc::Rpc::from_tiff_tag(tag).map(Some);
+        }
+        match &t.file {
+            Some(path) => crate::ops::rpc::rpc_sidecar(path),
+            None => Ok(None),
+        }
+    }
+
     /// Whether the pixels are read on demand (a GeoTIFF), rather than already in memory.
     pub fn is_lazy(&self) -> bool {
         matches!(self.inner, Inner::Tiff(_) | Inner::Source(..))
