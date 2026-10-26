@@ -1161,7 +1161,7 @@ impl Transformer {
         };
         let mut route = route::Route::new(&s, &d);
         if opts.allow_ballpark == Some(false) && !route.disallow_ballpark() {
-            return Err(Error::Crs("cannot find coordinate operations with ALLOW_BALLPARK=NO".into()));
+            return Err(Error::NoOperation("cannot find coordinate operations with ALLOW_BALLPARK=NO".into()));
         }
         let motion = match (s.datum_code(), opts.source_coordinate_epoch, opts.target_coordinate_epoch) {
             // Between geographic CRSs of the datum, as PROJ applies it (not to projected ones).
@@ -1283,7 +1283,7 @@ impl Transformer {
         self.flush_warnings();
         let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
         if self.policy.only_best && flags & 2 != 0 {
-            return Err(Error::Crs(
+            return Err(Error::MissingGrid(
                 "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
             ));
         }
@@ -1321,7 +1321,7 @@ impl Transformer {
             self.record_operation(ideal, outside);
             if ideal.is_some_and(|op| !op.available()) {
                 self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
-                return Err(Error::Crs(
+                return Err(Error::MissingGrid(
                     "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
                 ));
             }
@@ -1331,7 +1331,7 @@ impl Transformer {
             if self.policy.allow_ballpark == Some(false) { self.route.selected(&self.src, x, y, p).0 } else { None }
         };
         if self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark) {
-            return Err(Error::Crs("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
+            return Err(Error::NoOperation("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
         }
         Ok(selected)
     }
@@ -1342,13 +1342,13 @@ impl Transformer {
     /// whose grid is missing or which does not cover the point.
     fn check_vertical_policy(&self, operations: bool) -> Result<()> {
         if self.policy.only_best && operations {
-            return Err(Error::Crs(
+            return Err(Error::MissingGrid(
                 "ONLY_BEST=YES: the best vertical operation does not apply (its grid is missing, or the point is outside it); set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"
                     .into(),
             ));
         }
         if self.policy.allow_ballpark == Some(false) {
-            return Err(Error::Crs("ALLOW_BALLPARK=NO: no geoid model or vertical transformation applies to this point".into()));
+            return Err(Error::NoOperation("ALLOW_BALLPARK=NO: no geoid model or vertical transformation applies to this point".into()));
         }
         Ok(())
     }
@@ -1390,7 +1390,7 @@ impl Transformer {
         }
         .ok_or_else(fail)?;
         if refused_ballpark.get() {
-            return Err(Error::Crs("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
+            return Err(Error::NoOperation("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
         }
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;
         Ok((tx, ty, q.h))
