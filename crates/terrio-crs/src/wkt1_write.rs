@@ -327,13 +327,12 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
         }
         "lcc" => {
             let lat_1 = deg("lat_1").unwrap_or(0.0);
-            // With one standard parallel and no latitude of origin, PROJ's `lcc` (and terrio) puts
-            // the origin on the parallel, PROJ's CRSs on the equator with a second parallel there:
-            // written as the PROJ string.
+            // With one standard parallel and no latitude of origin, the origin and a second
+            // parallel are on the equator, as in PROJ's CRSs.
             let lat_2 = match deg("lat_2") {
                 Some(v) => v,
                 None if p.has("lat_0") => lat_1,
-                None => return None,
+                None => 0.0,
             };
             if lat_1 == lat_2 && lat_0 == lat_1 {
                 m("Lambert_Conformal_Conic_1SP", tm(lat_0, lon_0, k, fe, fn_))

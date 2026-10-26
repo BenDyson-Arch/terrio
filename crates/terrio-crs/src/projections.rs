@@ -257,14 +257,13 @@ struct Lcc {
 impl Lcc {
     fn new(s: &mut Setup<'_>) -> Result<Self> {
         let phi1 = s.p.angle("lat_1").unwrap_or(0.0);
+        // Without `lat_2`: one standard parallel with `lat_0` (Lambert Conic Conformal (1SP), or
+        // its variant B), else a second parallel on the equator, as PROJ reads such a CRS (2SP,
+        // the parameters left out at 0). PROJ's `lcc` operation would put both on `lat_1`.
         let phi2 = match s.p.angle("lat_2") {
             Some(v) => v,
-            None => {
-                if s.p.angle("lat_0").is_none() {
-                    s.phi0 = phi1;
-                }
-                phi1
-            }
+            None if s.p.angle("lat_0").is_some() => phi1,
+            None => 0.0,
         };
         if (phi1 + phi2).abs() < 1e-10 {
             return Err(err("lcc: lat_1 = -lat_2"));

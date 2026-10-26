@@ -918,6 +918,10 @@ PROJ_CASES = {
             "Versioned EPSG URN/URL references", TOLERANCE,
             "EPSG:4326 resolution; EPSG:3857 coordinates within 1e-7 m of PROJ 9.8.1",
         ),
+        "lcc_omitted_second_parallel_is_zero_in_a_crs": (
+            "Lambert Conic Conformal: omitted 2nd parallel is 0 (CRS semantics), PROJ string and WKT", TOLERANCE,
+            "within 1e-9 degrees of GDAL 3.13.3 / PROJ 9.9.0",
+        ),
         "winkel_tripel_omitted_parallel_preserves_crs_default": (
             "Winkel Tripel: omitted lat_1 equals explicit zero (CRS semantics)", TOLERANCE,
             "omitted and explicit-zero CRS parallel give equal coordinates",

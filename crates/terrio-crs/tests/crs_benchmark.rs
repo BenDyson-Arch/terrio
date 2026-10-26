@@ -95,6 +95,33 @@ fn winkel_tripel_explicit_parallel_matches_operation_oracle() {
 }
 
 #[test]
+fn lcc_omitted_second_parallel_is_zero_in_a_crs() {
+    // GDAL 3.13.3 / PROJ 9.9.0 read `+proj=lcc +lat_1=33` as Lambert Conic Conformal (2SP) with
+    // the latitude of false origin and the second parallel at 0 (a bare `lcc` operation puts both
+    // on lat_1), and WKT's 2SP method without its second parallel with that parallel at 0.
+    let geo = SpatialRef::from_proj4("+proj=longlat +datum=WGS84").unwrap();
+    let wkt1 = r#"PROJCS["local",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["latitude_of_origin",10],PARAMETER["central_meridian",20],PARAMETER["standard_parallel_1",33],PARAMETER["false_easting",5000],PARAMETER["false_northing",6000],UNIT["metre",1]]"#;
+    let wkt2 = r#"PROJCRS["local",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],UNIT["degree",0.0174532925199433]],CONVERSION["c",METHOD["Lambert Conic Conformal (2SP)",ID["EPSG",9802]],PARAMETER["Latitude of false origin",10,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Longitude of false origin",20,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Latitude of 1st standard parallel",33,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Easting at false origin",5000,LENGTHUNIT["metre",1]],PARAMETER["Northing at false origin",6000,LENGTHUNIT["metre",1]]],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],UNIT["metre",1]]"#;
+    let cases = [
+        (SpatialRef::from_proj4("+proj=lcc +lat_1=33 +datum=WGS84").unwrap(), (100_000.0, 2_000_000.0), (0.987544983668, 18.614169188061)),
+        (SpatialRef::from_wkt(wkt1), (300_000.0, 800_000.0), (22.895533776974, 17.447486644559)),
+        (SpatialRef::from_wkt(wkt2), (300_000.0, 800_000.0), (22.895533776974, 17.447486644559)),
+    ];
+    for (projected, (x, y), (lon, lat)) in cases {
+        let (lo, la) = Transformer::new(&projected, &geo).unwrap().transform(x, y).unwrap();
+        assert!((lo - lon).abs() < 1e-9 && (la - lat).abs() < 1e-9, "{projected:?}: ({lo}, {la})");
+        // The WKT terrio writes reads back as the same CRS.
+        let back = SpatialRef::from_wkt(&projected.to_wkt().unwrap());
+        let (lo2, la2) = Transformer::new(&back, &geo).unwrap().transform(x, y).unwrap();
+        assert!((lo2 - lon).abs() < 1e-9 && (la2 - lat).abs() < 1e-9, "{projected:?} written: ({lo2}, {la2})");
+    }
+    // With a latitude of origin, one parallel stays one parallel (1SP and its variant B).
+    let one = SpatialRef::from_proj4("+proj=lcc +lat_1=33 +lat_0=33 +datum=WGS84").unwrap();
+    let (lo, la) = Transformer::new(&one, &geo).unwrap().transform(100_000.0, 2_000_000.0).unwrap();
+    assert!((lo - 1.343259630).abs() < 1e-6 && (la - 50.696077540).abs() < 1e-6, "({lo}, {la})");
+}
+
+#[test]
 fn winkel_tripel_omitted_parallel_preserves_crs_default() {
     let geo = SpatialRef::from_proj4("+proj=longlat +R=6371000").unwrap();
     let default = SpatialRef::from_proj4("+proj=wintri +R=6371000").unwrap();
