@@ -271,6 +271,10 @@ impl Def {
             x0: p.f64("x_0").unwrap_or(0.0),
             y0: p.f64("y_0").unwrap_or(0.0),
         };
+        // As PROJ refuses it ("Invalid value for lat_0: |lat_0| should be <= 90°").
+        if setup.phi0.abs() > HALFPI + 1e-12 || !setup.phi0.is_finite() {
+            return Err(Error::Crs(format!("invalid lat_0: {} degrees", setup.phi0.to_degrees())));
+        }
         let rot = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
         let geocentric = name == "geocent";
         if geocentric && p.has("to_meter") && explicit_to_meter.is_none() {

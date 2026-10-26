@@ -1975,6 +1975,17 @@ mod tests {
     }
 
     #[test]
+    fn latitudes_of_origin_beyond_the_poles_are_refused() {
+        // PROJ 9.9: "Invalid value for lat_0: |lat_0| should be <= 90°", from a PROJ string and WKT 2.
+        assert!(SpatialRef::parse("+proj=tmerc +lat_0=100 +lon_0=9 +k=0.9996 +x_0=500000 +datum=WGS84").is_err());
+        let wkt2 = r#"PROJCRS["x",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]],CONVERSION["c",METHOD["Transverse Mercator",ID["EPSG",9807]],PARAMETER["Latitude of natural origin",100,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Longitude of natural origin",9,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Scale factor at natural origin",0.9996,SCALEUNIT["unity",1]],PARAMETER["False easting",500000,LENGTHUNIT["metre",1]],PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],CS[Cartesian,2],AXIS["(E)",east,LENGTHUNIT["metre",1]],AXIS["(N)",north,LENGTHUNIT["metre",1]]]"#;
+        assert!(Transformer::new(&SpatialRef::parse(wkt2).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).is_err());
+        // The poles themselves are origins.
+        assert!(SpatialRef::parse("+proj=stere +lat_0=-90 +lat_ts=-71 +datum=WGS84").is_ok());
+        assert!(SpatialRef::parse("+proj=laea +lat_0=90 +datum=WGS84").is_ok());
+    }
+
+    #[test]
     fn compound_crss_parse_as_in_gdal() {
         let c = SpatialRef::parse("EPSG:4326+5773").unwrap();
         assert_eq!(c.epsg, None);
