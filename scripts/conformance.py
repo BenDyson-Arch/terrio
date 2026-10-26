@@ -957,6 +957,19 @@ PROJ_CASES = {
             "within 1e-9 degrees of GDAL 3.13.3 / PROJ 9.9.0",
         ),
     },
+    "operations": {
+        "reports_the_transformation_used": "Operation report: the name and accuracy of PROJ 9.9's first candidate without grids (27700 both ways, 31467, `+towgs84`)",
+        "reports_ballparks_and_no_operation": "Operation report: ballparks (4610, EGM96 without its grid) and no operation for one datum",
+    },
+    "promote_to_3d": {
+        "heights_of_promoted_2d_crss_go_through_the_datum_transformation": (
+            "PromoteTo3D: heights of 2D CRSs through the datum transformation (RD New, sterea, sphere)", TOLERANCE,
+            "within 1e-8 degrees and 1 mm of GDAL 3.13.3 after OGRSpatialReference::PromoteTo3D",
+        ),
+    },
+    "refusal_kinds": {
+        "strict_refusals_have_their_own_variants": "ONLY_BEST and ALLOW_BALLPARK refuse where GDAL 3.13.3 does without grids, horizontal and vertical (CH1903+, Tokyo, WGS 84 + EGM96)",
+    },
     "geostationary": {
         "goes16_sweep_x_matches_proj": "GOES-16: `+proj=geos +h=35786023 +lon_0=-75 +sweep=x +ellps=GRS80`",
         "seviri_sweep_y_matches_proj": "Meteosat SEVIRI: `+proj=geos +h=35785831 +lon_0=0 +sweep=y +a=6378169 +b=6356583.8`",
