@@ -50,3 +50,11 @@ fn crss_with_heights_are_unchanged() {
     // Between 2D CRSs of one datum, heights stay ellipsoidal heights of that datum.
     assert_eq!(transform("EPSG:4326", "EPSG:3857", p, true).2, 10.0);
 }
+
+#[test]
+fn the_option_is_read_from_key_value_options() {
+    // `--ct-opt PROMOTE_TO_3D=YES` in the CLI, `ct_opt` and `to` in Python.
+    assert!(TransformOptions::from_strict_options(&[("PROMOTE_TO_3D", "YES")]).unwrap().promote_to_3d);
+    assert!(!TransformOptions::from_options(&[("promote_to_3d", "no")]).unwrap().promote_to_3d);
+    assert!(TransformOptions::from_strict_options(&[("PROMOTE_TO_3D", "perhaps")]).is_err());
+}

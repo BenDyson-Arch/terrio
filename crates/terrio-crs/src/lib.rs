@@ -936,7 +936,7 @@ impl TransformOptions {
     pub fn from_strict_options<K: AsRef<str>, V: AsRef<str>>(items: &[(K, V)]) -> Result<Self> {
         for (key, _) in items {
             let key = key.as_ref();
-            if !key.eq_ignore_ascii_case("ALLOW_BALLPARK") && !key.eq_ignore_ascii_case("ONLY_BEST") {
+            if !["ALLOW_BALLPARK", "ONLY_BEST", "PROMOTE_TO_3D"].iter().any(|k| key.eq_ignore_ascii_case(k)) {
                 return Err(Error::InvalidArgument(format!("unknown coordinate operation option: {key}")));
             }
         }
@@ -956,6 +956,7 @@ impl TransformOptions {
             match key.to_ascii_uppercase().as_str() {
                 "ALLOW_BALLPARK" => out.allow_ballpark = Some(boolean()?),
                 "ONLY_BEST" => out.only_best = boolean()?,
+                "PROMOTE_TO_3D" => out.promote_to_3d = boolean()?,
                 _ => {}
             }
         }

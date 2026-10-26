@@ -232,7 +232,9 @@ bands, full/separable kernel filters, mask sources and serialized warped VRTs
 buffers and serialized cutline/alpha/geolocation warps are unsupported.
 
 `transformPoints`, `Dataset.toBytes` and `warp` accept `allowBallpark: false` and
-`onlyBest: true` to control horizontal datum-operation fallbacks. Read diagnostics
+`onlyBest: true` to control horizontal datum-operation fallbacks; `transformPoints` and
+`Dataset.toBytes` also accept `promoteTo3d: true`, which takes 2D CRSs' heights as ellipsoidal
+heights (GDAL's `PromoteTo3D`). Read diagnostics
 with `takeWarnings()` after an operation. `warp` also accepts `kernelVersion: "3.13"`
 for GDAL 3.13 resampling; `"3.12"` remains the default. GeoTIFF/COG outputs preserve
 PixelIsPoint metadata and corner georeferencing.

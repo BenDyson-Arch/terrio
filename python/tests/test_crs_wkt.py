@@ -228,6 +228,13 @@ def test_coordinate_operation_policy_and_warnings():
         terrio.set_network_enabled(None)
 
 
+def test_transform_points_promotes_2d_crss_to_3d():
+    # RD New to WGS 84 3D: the height is kept unless the 2D CRS is promoted (GDAL's PromoteTo3D).
+    args = ([85000.0], [447000.0], "EPSG:28992", "EPSG:4979", [0.0])
+    assert terrio.transform_points(*args)[2][0] == 0.0
+    assert abs(terrio.transform_points(*args, promote_to_3d=True)[2][0] - 43.6) < 0.1
+
+
 def test_convert_and_warp_coordinate_operation_controls(tmp_path):
     """Conversion and raster warping use the same horizontal policy as coordinates."""
     point = tmp_path / "point.geojson"

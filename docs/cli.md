@@ -883,6 +883,9 @@ heights, keeping a vertical CRS's heights as they are (PROJ's ballpark vertical
 transformation) fails with `ALLOW_BALLPARK=NO`, and with `ONLY_BEST=YES` when a
 geoid model or vertical transformation exists but does not apply (its grid is
 missing, or the point is outside it).
+`PROMOTE_TO_3D=YES` takes the heights of 2D CRSs as ellipsoidal heights, so that
+datum transformations change them, as GDAL does after `PromoteTo3D` on both CRSs
+(`terrio crs EPSG:28992 --to EPSG:4979 --dim 3 85000 447000 0 --ct-opt PROMOTE_TO_3D=YES`).
 Point-cloud reprojection currently rejects `--ct-opt` because it does not support
 these controls.
 
