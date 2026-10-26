@@ -59,6 +59,12 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         }
         "lcc" => Box::new(Lcc::new(s)?),
         "merc" => Box::new(Merc::new(s)?),
+        // Web Mercator: the spherical formulas on the semi-major axis, with geodetic latitudes
+        // and a scale of 1 whatever `k_0`, as PROJ's `webmerc`.
+        "webmerc" => {
+            s.k0 = 1.0;
+            Box::new(Merc { e: 0.0, k0: 1.0 })
+        }
         "aea" => Box::new(Aea::new(s)?),
         "eqdc" => Box::new(Eqdc::new(s)?),
         "laea" => Box::new(Laea::new(s)),

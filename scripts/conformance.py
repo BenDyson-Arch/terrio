@@ -914,6 +914,10 @@ def suite_crs(ctx):
 # The PROJ definitions without an EPSG code that the tests check, by test file and test.
 PROJ_CASES = {
     "crs_benchmark": {
+        "web_mercator_keeps_its_origin_and_false_origin": (
+            "Web Mercator (webmerc): lon_0, x_0 and y_0, without the fallback", TOLERANCE,
+            "within 1e-9 degrees of GDAL 3.13.3 / PROJ 9.9.0",
+        ),
         "versioned_authority_references_match_proj": (
             "Versioned EPSG URN/URL references", TOLERANCE,
             "EPSG:4326 resolution; EPSG:3857 coordinates within 1e-7 m of PROJ 9.8.1",

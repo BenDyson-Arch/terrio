@@ -261,6 +261,24 @@ fn native_wagner_wkt1_includes_pole_graticules() {
 
 /// PROJ 9.8.1 / pyproj 3.8.0 resolve the versioned references to EPSG:4326.
 #[test]
+fn web_mercator_keeps_its_origin_and_false_origin() {
+    // GDAL 3.13.3 / PROJ 9.9.0. wbprojection, which `webmerc` went to with the fallback, dropped
+    // `+x_0` and `+y_0` (7.4 km here); `k_0` is ignored, as PROJ ignores it.
+    for (definition, geographic, (lon, lat)) in [
+        ("+proj=webmerc +x_0=5000 +y_0=-6000 +datum=WGS84 +units=m", "+proj=longlat +datum=WGS84", (8.938237076989, 17.730260346253)),
+        ("+proj=webmerc +lon_0=10 +datum=WGS84", "+proj=longlat +datum=WGS84", (18.983152841195, 17.678914238336)),
+        ("+proj=webmerc +k_0=0.5 +ellps=GRS80", "+proj=longlat +ellps=GRS80", (8.983152841195, 17.678914238336)),
+    ] {
+        let projected = SpatialRef::from_proj4(definition).unwrap();
+        let geo = SpatialRef::from_proj4(geographic).unwrap();
+        let (lo, la) = Transformer::new(&projected, &geo).unwrap().transform(1_000_000.0, 2_000_000.0).unwrap();
+        assert!((lo - lon).abs() < 1e-9 && (la - lat).abs() < 1e-9, "{definition}: ({lo}, {la})");
+        let (x, y) = Transformer::new(&geo, &projected).unwrap().transform(lon, lat).unwrap();
+        assert!((x - 1_000_000.0).abs() < 1e-6 && (y - 2_000_000.0).abs() < 1e-6, "{definition}: ({x}, {y})");
+    }
+}
+
+#[test]
 fn versioned_authority_references_match_proj() {
     for reference in [
         "urn:ogc:def:crs:EPSG:6.6:4326",
