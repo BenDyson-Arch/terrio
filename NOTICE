@@ -350,3 +350,7 @@ are from Michael Sumner's rust-proj-capability
 (https://github.com/mdsumner/rust-proj-capability), revision
 ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
 The CRS-study oracle version is retained separately from projection-suite data.
+
+The LERC header bounds in crates/terrio/src/tiff_codecs.rs follow the
+Lerc1/Lerc2 layouts implemented by lerc-rust 0.5.0
+(https://github.com/i-norden/lerc-rust), under its MIT license.
