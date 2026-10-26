@@ -934,6 +934,10 @@ PROJ_CASES = {
             "Orthographic: round trips across origins, figures, scales and azimuths", TOLERANCE,
             "round trip <1e-5 degrees at the ill-conditioned limb",
         ),
+        "stereographic_origins_near_a_pole_stay_accurate": (
+            "Stereographic and Oblique Stereographic: origins within 1e-6 to 1e-12 degrees of a pole", TOLERANCE,
+            "within the origin's shift of the pole's answer; sterea within 2 mm of GDAL 3.13.3 at lat_0=89.99999999 (PROJ: 12,714 km at 89.9999999)",
+        ),
         **{
             test: (name, TOLERANCE, "forward <1 mm; inverse <1e-7 degrees, or 1e-6 at exact poles (longitude weighted by cos(latitude))")
             for test, name in {

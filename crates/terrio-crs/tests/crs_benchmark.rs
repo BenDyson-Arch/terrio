@@ -187,6 +187,57 @@ fn orthographic_roundtrips_across_origins_scales_and_rotations() {
 }
 
 #[test]
+fn stereographic_origins_near_a_pole_stay_accurate() {
+    // PROJ 9.9.0's `sterea` rounds the conformal latitude of an origin within about 1e-7° of a pole
+    // to the pole while the origin is not, and puts points in the other hemisphere, 12,714 km off
+    // (`+lat_0=89.9999999`). GDAL 3.13.3 answers for `+lat_0=89.99999999` only because PROJ writes
+    // that latitude as 90. The answers must approach the pole's as the origin does.
+    let geo = SpatialRef::from_proj4("+proj=longlat +datum=WGS84").unwrap();
+    let at = |lat_0: f64| {
+        let crs = SpatialRef::from_proj4(&format!("+proj=sterea +lat_0={lat_0} +datum=WGS84")).unwrap();
+        Transformer::new(&crs, &geo).unwrap().transform(1000.0, 2000.0).unwrap()
+    };
+    // Metres between two points near a pole.
+    let apart = |(lon1, lat1): (f64, f64), (lon2, lat2): (f64, f64)| {
+        let (r1, r2) = ((90.0 - lat1.abs()) * 111_195.0, (90.0 - lat2.abs()) * 111_195.0);
+        let (a1, a2) = (lon1.to_radians(), lon2.to_radians());
+        (r1 * a1.cos() - r2 * a2.cos()).hypot(r1 * a1.sin() - r2 * a2.sin())
+    };
+    for pole in [90.0_f64, -90.0] {
+        let exact = at(pole);
+        assert_eq!(exact.1.signum(), pole.signum());
+        for off in [1e-6, 1e-7, 1e-8, 1e-9, 1e-12] {
+            let near = at(pole - off * pole.signum());
+            // The origin moves by `off` degrees, about 0.11 m per 1e-6°.
+            assert!(near.1.signum() == pole.signum() && apart(near, exact) < 1.5 * off * 111_195.0, "{pole} - {off}: {near:?}");
+        }
+    }
+    // GDAL 3.13.3 / PROJ 9.9.0, for lat_0 = 89.99999999 (computed at 90): within the 1e-8° shift.
+    assert!(apart(at(89.99999999), (153.4349488229, 89.9799804075)) < 2e-3);
+
+    // `stere` with an origin near a pole: within the origin's shift of the polar projection's
+    // answer, 4,200 km away (it was metres off, as PROJ's `stere` still is at 89.9999999).
+    let ecef = SpatialRef::parse("EPSG:4978").unwrap();
+    let to_ecef = |definition: String, (x, y): (f64, f64)| {
+        let crs = SpatialRef::from_proj4(&definition).unwrap();
+        Transformer::new(&crs, &ecef).unwrap().transform_3d(x, y, 0.0).unwrap()
+    };
+    for pole in [90.0_f64, -90.0] {
+        for point in [(200_000.0, 567_890.0), (3_000_000.0, -3_000_000.0)] {
+            let exact = to_ecef(format!("+proj=stere +lat_0={pole} +datum=WGS84"), point);
+            for off in [1e-6, 1e-7, 1e-8, 1e-9, 1e-12] {
+                let near = to_ecef(format!("+proj=stere +lat_0={} +datum=WGS84", pole - off * pole.signum()), point);
+                let d = ((near.0 - exact.0).powi(2) + (near.1 - exact.1).powi(2) + (near.2 - exact.2).powi(2)).sqrt();
+                // A shift of `off` degrees moves the origin by `off` × 111 km and turns the plane
+                // by `off` (in radians) about it.
+                let shift = off * 111_195.0 + point.0.hypot(point.1) * off.to_radians();
+                assert!(d < 1.5 * shift + 1e-6, "stere {pole} - {off}, {point:?}: {d} m");
+            }
+        }
+    }
+}
+
+#[test]
 fn native_wagner_wkt1_includes_pole_graticules() {
     let definitions = include_str!("data/proj_strings.tsv");
     // Git can check out this text fixture with CRLF on Windows. Exercise both

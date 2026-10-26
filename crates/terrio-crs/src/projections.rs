@@ -846,12 +846,16 @@ impl Stere {
                     }
                 }
                 Mode::Equit | Mode::Obliq => {
-                    let t = phi0.sin();
-                    let x = 2.0 * ssfn(phi0, t, e).atan() - HALFPI;
+                    let (t, cosphi0) = phi0.sin_cos();
+                    // The conformal latitude x of the origin, from T = tan(45° + x/2) without
+                    // `atan`: near a pole, `2 atan(T) - 90°` left cos x with a relative error of
+                    // about 1e-6 (metres at 4,000 km from an origin 1e-8° off the pole).
+                    let tan_half = if phi0 < 0.0 { cosphi0 / (1.0 - t) } else { (1.0 + t) / cosphi0 };
+                    let big_t = tan_half * ((1.0 - t * e) / (1.0 + t * e)).powf(0.5 * e);
                     let t = t * e;
-                    akm1 = 2.0 * k0 * phi0.cos() / (1.0 - t * t).sqrt();
-                    sin_x1 = x.sin();
-                    cos_x1 = x.cos();
+                    akm1 = 2.0 * k0 * cosphi0 / (1.0 - t * t).sqrt();
+                    sin_x1 = (big_t * big_t - 1.0) / (big_t * big_t + 1.0);
+                    cos_x1 = 2.0 * big_t / (big_t * big_t + 1.0);
                 }
             }
         } else {
@@ -1047,14 +1051,19 @@ impl Gauss {
         if c == 0.0 {
             return Err(err("gauss: invalid ellipsoid"));
         }
-        let chi = (sphi / c).asin();
+        // The conformal latitude chi (sin chi = sin phi0 / c), and tan(45° + x/2) of it and of phi0,
+        // from their distances to the pole, 1 - |sin|: near a pole `asin` and `tan` round chi to
+        // the pole while phi0 is not, which made `k` wrong by orders of magnitude (from about
+        // 1e-8° off a pole).
+        let to_pole = cphi2 / (1.0 + sphi.abs());
+        let d = (es * cphi2 * cphi2 / ((1.0 - es) * (c + 1.0)) + to_pole) / c;
+        let cos_chi = (d * (2.0 - d)).sqrt();
+        let chi = ((1.0 - d).copysign(sphi)).atan2(cos_chi);
+        // tan(45° + x/2) = (1 + |sin x|) / cos x, inverted for x < 0.
+        let tan_half = |to_pole: f64, cos: f64| if phi0 < 0.0 { cos / (2.0 - to_pole) } else { (2.0 - to_pole) / cos };
         let ratexp = 0.5 * c * e;
         let srat_val = srat(e * sphi, ratexp);
-        let k = if 0.5 * phi0 + FORTPI < 1e-10 {
-            1.0 / srat_val
-        } else {
-            (0.5 * chi + FORTPI).tan() / ((0.5 * phi0 + FORTPI).tan().powf(c) * srat_val)
-        };
+        let k = tan_half(d, cos_chi) / (tan_half(to_pole, cphi).powf(c) * srat_val);
         Ok((Self { c, k, e, ratexp }, chi, rc))
     }
 
