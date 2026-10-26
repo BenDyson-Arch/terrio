@@ -117,3 +117,76 @@ fn a_window_too_large_to_allocate_is_an_error() {
     let e = r.read_window(Window::full(r.width(), r.height()), &band1()).unwrap_err();
     assert!(e.to_string().contains("too large"), "{e}");
 }
+
+#[test]
+fn oversized_tiled_windows_are_rejected_before_fetching_chunks() {
+    // A single enormous tile has valid metadata, with its payload far beyond the
+    // header blocks. Reject the output size before prefetching that payload.
+    let entries: [(u16, u16, u32); 10] = [
+        (256, 4, u32::MAX - 15),
+        (257, 4, u32::MAX - 15),
+        (258, 3, 64),
+        (259, 3, 1),
+        (262, 3, 1),
+        (322, 4, u32::MAX - 15),
+        (323, 4, u32::MAX - 15),
+        (324, 4, 1 << 20),
+        (325, 4, 2048),
+        (339, 3, 3),
+    ];
+    let mut bytes = b"II*\0".to_vec();
+    bytes.extend_from_slice(&8u32.to_le_bytes());
+    bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    for (tag, typ, value) in entries {
+        bytes.extend_from_slice(&tag.to_le_bytes());
+        bytes.extend_from_slice(&typ.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.resize((1 << 20) + 2048, 0);
+    let file = SparseFile::new(bytes.len() as u64);
+    let fetch = |o: u64, n: u64| Ok(bytes[o as usize..(o + n) as usize].to_vec());
+    let mut raster = read_with(&file, 8, fetch, || Ok(LazyRaster::from_sparse(file.clone())?.unwrap())).unwrap();
+    let mut bytes_fetched = 0;
+    let result = read_with(
+        &file,
+        8,
+        |o, n| {
+            bytes_fetched += n;
+            fetch(o, n)
+        },
+        || raster.read_window(Window::full(raster.width(), raster.height()), &band1()),
+    );
+    assert!(matches!(result, Err(terrio::Error::InvalidArgument(ref message)) if message.contains("too large")));
+    assert_eq!(bytes_fetched, 0);
+}
+
+#[test]
+fn eager_reads_apply_selected_limits_to_reopened_decoders() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("strips.tif");
+    let values: Vec<f64> = (0..32).map(f64::from).collect();
+    let file = std::fs::File::create(&path).unwrap();
+    let mut encoder = tiff::encoder::TiffEncoder::new(file).unwrap();
+    let mut image = encoder.new_image::<tiff::encoder::colortype::Gray64Float>(4, 8).unwrap();
+    image.rows_per_strip(2).unwrap();
+    image.write_data(&values).unwrap();
+    drop(encoder);
+    // Four 64-byte strips exercise the decoder-reopen path under a two-thread pool.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    pool.install(|| {
+        let path = path.to_str().unwrap();
+        let read = |limit| terrio::open_raster_with_tiff_limits(path, TiffReadLimits { chunk_bytes: limit });
+        assert!(read(63).is_err());
+        for limit in [64, usize::MAX] {
+            let result = read(limit).unwrap();
+            assert_eq!(result.raster.data.len(), values.len());
+            for (i, value) in values.iter().enumerate() {
+                assert_eq!(result.raster.data.get_f64(i), *value);
+            }
+        }
+        assert_eq!(terrio::open_raster(path).unwrap().raster.data.len(), values.len());
+        assert!(matches!(terrio::open(path).unwrap(), terrio::Dataset::Raster(_)));
+    });
+}

@@ -82,7 +82,8 @@ pub struct WindowOptions {
 ///
 /// The default is the `tiff` crate's: 256 MiB for a decoded chunk (tile or strip). Files with
 /// larger chunks need a larger limit: see [`LazyRaster::open_tiff_with_limits`],
-/// [`LazyRaster::from_tiff_bytes_with_limits`] and [`LazyRaster::from_sparse_with_limits`]. The
+/// [`LazyRaster::from_tiff_bytes_with_limits`], [`LazyRaster::from_sparse_with_limits`] and
+/// [`crate::open_raster_with_tiff_limits`] for eager reads. The
 /// window a read returns is not bounded by it: check the window's size before reading it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TiffReadLimits {
@@ -1073,6 +1074,15 @@ impl TiffRaster {
 
     /// Reads a window of some bands (numbered from 1) of a level, band-major.
     fn read(&mut self, level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
+        let len = bands
+            .len()
+            .checked_mul(w.width)
+            .and_then(|n| n.checked_mul(w.height))
+            .filter(|n| n.checked_mul(self.data_type.size_bytes()).is_some_and(|b| b <= isize::MAX as usize))
+            .ok_or_else(|| {
+                Error::InvalidArgument(format!("a window of {}x{} pixels in {} band(s) is too large", w.width, w.height, bands.len()))
+            })?;
+
         let ifd = self.levels[level].ifd;
         let dec = &mut self.decoder;
         if self.current_ifd != ifd {
@@ -1111,14 +1121,6 @@ impl TiffRaster {
         dec.inner().get_ref().prefetch(&ranges)?;
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
-        let len = bands
-            .len()
-            .checked_mul(w.width)
-            .and_then(|n| n.checked_mul(w.height))
-            .filter(|n| n.checked_mul(self.data_type.size_bytes()).is_some_and(|b| b <= isize::MAX as usize))
-            .ok_or_else(|| {
-                Error::InvalidArgument(format!("a window of {}x{} pixels in {} band(s) is too large", w.width, w.height, bands.len()))
-            })?;
         let mut out = RasterData::new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0));
         let spp = if planar { 1 } else { self.bands };
         // Chunks with data, and where they go.
