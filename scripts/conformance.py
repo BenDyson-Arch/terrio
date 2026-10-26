@@ -974,6 +974,7 @@ PROJ_CASES = {
         ),
     },
     "refusal_kinds": {
+        "global_latitude_of_origin_validation_matches_proj": "PROJ 9.8.1 global lat_0 validation for longlat, UTM, geocentric, Web Mercator and ob_tran",
         "strict_policy_allows_vertical_unit_conversion": (
             "Strict NAVD88 metres to US survey feet", TOLERANCE,
             "GDAL 3.12.2 / PROJ 9.8.1 under ONLY_BEST and ALLOW_BALLPARK=NO; 1e-10 height units",

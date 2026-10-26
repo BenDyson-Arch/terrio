@@ -1,5 +1,5 @@
-//! Strict coordinate-operation refusals carry their kind, so a caller can tell a missing grid (the
-//! environment) from a CRS pair with no acceptable operation, whatever the message says.
+//! Strict refusals distinguish an unavailable required operation from no permitted operation.
+//! MissingGrid includes missing grid data and insufficient coverage for a point.
 
 use terrio_crs::{Error, SpatialRef, TransformOptions, Transformer};
 
@@ -50,4 +50,17 @@ fn strict_policy_allows_vertical_unit_conversion() {
     let inverse = Transformer::with_options(&target, &source, &options).unwrap();
     let back = inverse.transform_3d(actual.0, actual.1, actual.2).unwrap();
     assert!((back.2 - 100.0).abs() < 1e-10);
+}
+
+#[test]
+fn global_latitude_of_origin_validation_matches_proj() {
+    // GDAL 3.12.2 / PROJ 9.8.1 rejects these during CRS creation even
+    // when the particular projection does not use an origin latitude.
+    for projection in ["+proj=longlat", "+proj=utm +zone=33", "+proj=geocent", "+proj=webmerc", "+proj=ob_tran +o_proj=longlat +o_lat_p=45"]
+    {
+        for latitude in [-95, 95] {
+            let definition = format!("{projection} +lat_0={latitude} +datum=WGS84");
+            assert!(SpatialRef::parse(&definition).is_err(), "{definition}");
+        }
+    }
 }

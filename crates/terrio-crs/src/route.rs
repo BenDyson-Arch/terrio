@@ -29,9 +29,16 @@ thread_local! {
 
 /// Runs `f`, returning its result and the operations routes and geoid models used meanwhile.
 pub(crate) fn recording<T>(f: impl FnOnce() -> T) -> (T, Vec<Used>) {
-    let previous = USED.with(|u| u.replace(Some(Vec::new())));
+    struct Restore(Option<Vec<Used>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            USED.with(|used| *used.borrow_mut() = self.0.take());
+        }
+    }
+    // The previous capture is restored on return and on a caught unwind.
+    let _restore = Restore(USED.with(|used| used.replace(Some(Vec::new()))));
     let out = f();
-    let used = USED.with(|u| u.replace(previous)).unwrap_or_default();
+    let used = USED.with(|used| used.take()).unwrap_or_default();
     (out, used)
 }
 
@@ -1133,6 +1140,42 @@ fn step_names(op: &Op, reverse: bool) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::{SpatialRef, Transformer};
+
+    #[test]
+    fn recording_cleans_up_after_unwind() {
+        assert!(
+            std::panic::catch_unwind(|| recording(|| {
+                note(None, false, OpKind::Datum);
+                panic!("recording interrupted");
+            }))
+            .is_err()
+        );
+        USED.with(|used| assert!(used.borrow().is_none()));
+        // An unrecorded operation must stay a no-op after the caught panic.
+        note(None, false, OpKind::Datum);
+        USED.with(|used| assert!(used.borrow().is_none()));
+    }
+
+    #[test]
+    fn nested_recording_restores_the_outer_capture() {
+        let (_, outer) = recording(|| {
+            note(None, false, OpKind::Datum);
+            let (_, inner) = recording(|| note(None, false, OpKind::Vertical));
+            assert_eq!(inner.len(), 1);
+            assert_eq!(inner[0].name, "Ballpark vertical transformation");
+            assert!(
+                std::panic::catch_unwind(|| recording(|| {
+                    note(None, false, OpKind::Vertical);
+                    panic!("inner recording interrupted");
+                }))
+                .is_err()
+            );
+            note(None, false, OpKind::Datum);
+        });
+        assert_eq!(outer.len(), 2);
+        assert!(outer.iter().all(|operation| operation.name == "Ballpark geographic offset"));
+        USED.with(|used| assert!(used.borrow().is_none()));
+    }
 
     #[test]
     fn reports_the_successful_fallback_after_a_grid_pipeline_fails() {

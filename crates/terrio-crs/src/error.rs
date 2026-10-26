@@ -7,8 +7,9 @@ pub enum Error {
     /// A coordinate reference system could not be parsed or used.
     #[error("coordinate reference system: {0}")]
     Crs(String),
-    /// The best coordinate operation needs a grid that is not available, with
-    /// [`crate::TransformOptions::only_best`] (GDAL's `ONLY_BEST=YES`).
+    /// The best coordinate operation is unavailable for this point, with
+    /// [`crate::TransformOptions::only_best`] (GDAL's `ONLY_BEST=YES`). This includes missing
+    /// grids and points outside an operation's coverage; inspect the message for the reason.
     #[error("coordinate reference system: {0}")]
     MissingGrid(String),
     /// No coordinate operation meets the options: a ballpark one would be needed, with

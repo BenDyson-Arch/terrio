@@ -267,6 +267,8 @@ fn web_mercator_keeps_its_origin_and_false_origin() {
         ("+proj=webmerc +x_0=5000 +y_0=-6000 +datum=WGS84 +units=m", "+proj=longlat +datum=WGS84", (8.938237076989, 17.730260346253)),
         ("+proj=webmerc +lon_0=10 +datum=WGS84", "+proj=longlat +datum=WGS84", (18.983152841195, 17.678914238336)),
         ("+proj=webmerc +k_0=0.5 +ellps=GRS80", "+proj=longlat +ellps=GRS80", (8.983152841195, 17.678914238336)),
+        // GDAL 3.12.2 / PROJ 9.8.1 ignores lat_ts even beyond the poles for webmerc.
+        ("+proj=webmerc +lat_ts=95 +ellps=WGS84", "+proj=longlat +ellps=WGS84", (8.983152841195, 17.678914238336)),
     ] {
         let projected = SpatialRef::from_proj4(definition).unwrap();
         let geo = SpatialRef::from_proj4(geographic).unwrap();
