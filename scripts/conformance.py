@@ -805,6 +805,27 @@ def epsg_cases(s, ctx, test, points, suffix=""):
     return True
 
 
+def suite_iau(ctx):
+    """All IAU_2015 projected definitions against live GDAL/PROJ."""
+    suite = Suite("iau", "IAU_2015 planetary CRSs", "GDAL/PROJ",
+                  "2,074 registered pairs plus unit/offset cases, planetary latitudes and axes. "
+                  "Component tolerances: 1 mm projected; 1e-8 degrees geographic.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_iau_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("IAU_2015", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_perspective(ctx):
     """Native near-sided and tilted perspective, including visibility/domain limits."""
     suite = Suite("perspective", "Perspective projections", "GDAL/PROJ",
@@ -952,6 +973,14 @@ PROJ_CASES = {
         "cass_matches_proj": "Cassini-Soldner: `+proj=cass +lat_0=48 +lon_0=10` (WGS 84 and sphere) and `+hyperbolic`",
     },
     "proj_strings": {
+        "earth_wkt2_negative_axes_match_gdal": (
+            "Earth WKT2 west/south geographic axes", TOLERANCE,
+            "GDAL 3.12.2/PROJ 9.8.1 traditional GIS order: forward/inverse within 1e-12 degrees for west/south, south/west and north/east controls",
+        ),
+        "earth_meridian_and_inverse_values_match_proj": (
+            "Earth meridian series and inverse normalization", TOLERANCE,
+            "nine pinned GDAL 3.12.2/PROJ 9.8.1 points: UTM 10N, equidistant conic and sinusoidal; forward <1 micrometre, inverse <1e-11 degrees",
+        ),
         "proj_strings_match_proj_or_are_refused": "Every PROJ projection as a PROJ string (117, WGS 84 and sphere): matches PROJ or is refused",
         "unsupported_projections_are_refused_in_every_encoding": "The projections terrio does not implement, refused as WKT too",
         "pyproj_wkt_matches_proj": "The same CRSs as pyproj's WKT1_GDAL and WKT2_2019 (known differences: #119, #156)",
@@ -1344,6 +1373,7 @@ SUITES = OrderedDict(
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("projjson", suite_projjson),
+        ("iau", suite_iau),
         ("crs-grids", suite_crs_grids),
     ]
 )
