@@ -426,6 +426,25 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
     datum_names().0.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
 }
 
+/// The official name of an EPSG datum.
+pub(crate) fn datum_name(code: u32) -> Option<String> {
+    static NAMES: OnceLock<HashMap<u32, String>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            decompress(DATUM_NAMES)
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .filter_map(|line| {
+                    let mut f = line.splitn(3, '\t');
+                    let (code, rank, name) = (f.next()?.parse::<u32>().ok()?, f.next()?, f.next()?);
+                    (rank == "0").then(|| (code, name.to_string()))
+                })
+                .collect()
+        })
+        .get(&code)
+        .cloned()
+}
+
 /// The other EPSG datums whose CRSs ESRI writes with a datum name: ETRS89-NOR for
 /// `D_ETRS_1989` (ETRS89-NOR [EUREF89] / NTM zone 18, EPSG:5118), S-JTSK (Ferro) for `D_S_JTSK`.
 pub(crate) fn datums_written_as(name: &str) -> &'static [u32] {

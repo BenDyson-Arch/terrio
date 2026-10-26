@@ -870,6 +870,28 @@ def suite_projjson(ctx):
     return suite
 
 
+def suite_projjson_export(ctx):
+    """terrio's PROJJSON export against live PROJ's PROJJSON and GDAL reading it."""
+    suite = Suite("projjson-export", "PROJJSON export", "PROJ/GDAL",
+                  "`SpatialRef::to_projjson` of 45 CRSs compared with PROJ's PROJJSON by meaning and read by "
+                  "GDAL with the original's coordinates; every IAU_2015 CRS read by GDAL with its code's "
+                  "coordinates, per body. Tolerance: 1e-8 degrees.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_projjson_export_with_gdal.py"), "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case(case["group"], case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_geocentric(ctx):
     """XYZ conversions, units, poles, datum shifts and projected composition."""
     suite = Suite("geocentric", "Geocentric XYZ endpoints", "GDAL/PROJ",
@@ -1442,6 +1464,7 @@ SUITES = OrderedDict(
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("projjson", suite_projjson),
+        ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),
         ("crs-grids", suite_crs_grids),
     ]
