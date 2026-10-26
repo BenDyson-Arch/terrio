@@ -73,7 +73,20 @@ impl Vertical {
     /// The vertical CRS of an EPSG code.
     pub fn from_epsg(code: u32) -> Option<Self> {
         let v = epsg::vertical(code)?;
-        let models = epsg::geoid_models(code).into_iter().map(|(g, ops)| (Some(g), ops)).collect();
+        // The table does not name geoid models: `WGS 84 to EGM96 height`, as PROJ names them
+        // without the EPSG index (`(1)`).
+        let named = |g: u32, ops: Vec<Arc<datum::Op>>| -> Vec<Arc<datum::Op>> {
+            let Some(geog) = epsg::get(g) else { return ops };
+            ops.into_iter()
+                .map(|op| {
+                    if !op.name.is_empty() || op.steps.is_empty() {
+                        return op;
+                    }
+                    Arc::new(datum::Op { name: format!("{} to {}", geog.name, v.name), ..(*op).clone() })
+                })
+                .collect()
+        };
+        let models = epsg::geoid_models(code).into_iter().map(|(g, ops)| (Some(g), named(g, ops))).collect();
         Some(Self { code: Some(code), to_meter: v.to_meter, down: v.down, models, ballpark: true })
     }
 

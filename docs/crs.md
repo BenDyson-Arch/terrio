@@ -179,6 +179,16 @@ CRS are covered. `scripts/gen_epsg_points.py` writes GDAL's results for every EP
 `crates/terrio-crs/tests/epsg_accuracy.rs` checks terrio against (see the
 [conformance report](conformance.md)).
 
+`Transformer::operation_at(x, y, z)` returns the transformations `transform_3d` runs for a point,
+as PROJ's `proj_trans_get_last_used_operation`: their names, summed accuracy, grids and whether one
+is a ballpark, or `None` between CRSs of one datum. Conversions (projections, units) are not
+named, and geoid models are named without PROJ's EPSG index (`WGS 84 to EGM96 height`).
+
+```rust
+let t = terrio_crs::Transformer::new(&SpatialRef::parse("EPSG:27700")?, &SpatialRef::parse("EPSG:4326")?)?;
+let op = t.operation_at(530000.0, 180000.0, 0.0)?;   // "OSGB36 to WGS 84 (9)", 1 m, OSTN15
+```
+
 ### Datum shift grids
 
 Many datum transformations interpolate shifts in a grid: NADCON and NADCON5 in the United

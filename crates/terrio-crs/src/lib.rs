@@ -1082,7 +1082,45 @@ fn geoid_applies(ops: &[std::sync::Arc<datum::Op>], p: datum::Point) -> bool {
 /// ellipsoidal heights.
 fn run_model(ops: &[std::sync::Arc<datum::Op>], p: datum::Point, reverse: bool) -> Option<datum::Point> {
     let (lon, lat) = (p.lon.to_degrees(), p.lat.to_degrees());
-    datum::transform_with(ops, |op, _| op.contains(lon, lat), |i| datum::run_op(&ops[i], p, reverse, true))
+    datum::transform_with(
+        ops,
+        |op, _| op.contains(lon, lat),
+        |i| datum::run_op(&ops[i], p, reverse, true).inspect(|_| route::note(Some(&ops[i]), reverse, route::OpKind::Vertical)),
+    )
+}
+
+/// A coordinate operation a [`Transformer`] uses for a point: see [`Transformer::operation_at`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoordinateOperation {
+    /// The names of the transformations, in the order they run, joined by ` + ` as PROJ joins
+    /// them (`Inverse of OSGB36 to WGS 84 (6)`). Conversions (projections, units, axes) are not
+    /// named. PROJ's ballpark transformations are `Ballpark geographic offset` and
+    /// `Ballpark vertical transformation`.
+    pub name: String,
+    /// The accuracy in metres: the sum of the transformations' accuracies, as PROJ adds them;
+    /// `None` when one of them has none (a ballpark, a `+towgs84` definition).
+    pub accuracy: Option<f64>,
+    /// The grids the transformations interpolate in.
+    pub grids: Vec<String>,
+    /// Whether one of them is a ballpark: no datum shift, or heights kept as they are.
+    pub ballpark: bool,
+}
+
+impl CoordinateOperation {
+    fn from_used(used: Vec<route::Used>) -> Option<Self> {
+        if used.is_empty() {
+            return None;
+        }
+        let name = used.iter().map(|u| u.name.as_str()).collect::<Vec<_>>().join(" + ");
+        let accuracy = used.iter().try_fold(0.0, |sum, u| (u.accuracy >= 0.0).then_some(sum + u.accuracy));
+        let mut grids: Vec<String> = Vec::new();
+        for g in used.iter().flat_map(|u| u.grids.iter()) {
+            if !grids.contains(g) {
+                grids.push(g.clone());
+            }
+        }
+        Some(Self { name, accuracy, grids, ballpark: used.iter().any(|u| u.ballpark) })
+    }
 }
 
 impl Transformer {
@@ -1363,6 +1401,20 @@ impl Transformer {
         self.transform_at(x, y, z, Some(t))
     }
 
+    /// The coordinate operation [`Transformer::transform_3d`] uses for a point: the
+    /// transformations between datums and vertical CRSs it runs, as PROJ's
+    /// `proj_trans_get_last_used_operation` gives them after transforming the point. `None` when
+    /// the point needs none (CRSs of one datum, without a vertical change). Fails as
+    /// `transform_3d` fails for the point, under the same options.
+    ///
+    /// The point is transformed to find out, so this costs a transformation; the result is not
+    /// kept, and the transformer is not changed (it can be shared between threads).
+    pub fn operation_at(&self, x: f64, y: f64, z: f64) -> Result<Option<CoordinateOperation>> {
+        let (result, used) = route::recording(|| self.transform_at(x, y, z, self.time));
+        result?;
+        Ok(CoordinateOperation::from_used(used))
+    }
+
     fn transform_at(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
         if self.cartesian_src.is_some() || self.cartesian_dst.is_some() {
@@ -1426,6 +1478,7 @@ impl Transformer {
                     // None applies: heights are kept, as by PROJ's ballpark.
                     None => {
                         self.check_vertical_policy(true)?;
+                        route::note(None, false, route::OpKind::Vertical);
                         b.height_of(a.to_metres(z))
                     }
                 },
@@ -1457,6 +1510,9 @@ impl Transformer {
         if self.src.vertical().is_some() && !geoid {
             self.check_vertical_policy(!h.src.models.is_empty())?;
         }
+        if start.is_none() && self.src.vertical().is_some() {
+            route::note(None, false, route::OpKind::Vertical);
+        }
         let (i, p) = start.unwrap_or((0, p0));
         let (sx, sy) = if i == 0 { (x, y) } else { (p.lon.to_degrees(), p.lat.to_degrees()) };
         // From ellipsoidal heights to the target.
@@ -1478,6 +1534,7 @@ impl Transformer {
         }
         if self.dst.vertical().is_some() {
             self.check_vertical_policy(!h.dst.models.is_empty())?;
+            route::note(None, false, route::OpKind::Vertical);
         }
         let q = h.middle(i, 0).apply(&h.src.defs[i], sx, sy, p, true).ok_or_else(fail)?;
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;
@@ -1529,6 +1586,7 @@ impl Transformer {
                 None => Some(p),
             };
             if let Some(h) = q.and_then(|q| datum::run_op(op, q, false, true)).map(|r| r.h) {
+                route::note(Some(op), false, route::OpKind::Vertical);
                 return Some(h);
             }
             excluded.push(i);

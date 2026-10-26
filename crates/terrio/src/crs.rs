@@ -292,6 +292,8 @@ impl TransformOptions {
     }
 }
 
+pub use terrio_crs::CoordinateOperation;
+
 /// A coordinate transformer backed by the shared standalone engine.
 pub struct Transformer(terrio_crs::Transformer);
 impl Transformer {
@@ -317,6 +319,11 @@ impl Transformer {
     /// Transform a coordinate with its observation epoch.
     pub fn transform_4d(&self, x: f64, y: f64, z: f64, t: f64) -> Result<(f64, f64, f64)> {
         self.0.transform_4d(x, y, z, t).map_err(Into::into)
+    }
+    /// The coordinate operation [`Transformer::transform_3d`] uses for a point (see the
+    /// standalone engine's `Transformer::operation_at`); `None` when it needs none.
+    pub fn operation_at(&self, x: f64, y: f64, z: f64) -> Result<Option<CoordinateOperation>> {
+        self.0.operation_at(x, y, z).map_err(Into::into)
     }
     /// Transform a bounding box, densifying its edges.
     pub fn transform_bounds(&self, bounds: (f64, f64, f64, f64)) -> Result<(f64, f64, f64, f64)> {
