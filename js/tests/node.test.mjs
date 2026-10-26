@@ -1526,3 +1526,8 @@ test("promoteTo3d applies to vector toBytes and preserves 2D geometry", () => {
   }
   assert.equal(promoted[2].length, 2);
 });
+
+test("unterminated quoted PROJ values raise an error", () => {
+  assert.throws(() => terrio.transformPoints([10], [40], "EPSG:4326",
+    '+proj=tmerc +datum=WGS84 +title="abc +k=0.9996'), /unterminated quoted PROJ value/);
+});

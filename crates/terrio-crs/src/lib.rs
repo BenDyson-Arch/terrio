@@ -320,6 +320,7 @@ impl SpatialRef {
     /// A CRS from a PROJ string such as `+proj=utm +zone=33 +datum=WGS84`.
     pub fn from_proj4(proj4: &str) -> Result<Self> {
         let p = params::Params::parse(proj4);
+        p.validate_quoting()?;
         if let Some(code) = p.str("init").and_then(|i| i.to_ascii_lowercase().strip_prefix("epsg:").and_then(|c| c.parse().ok())) {
             return Self::from_epsg(code);
         }

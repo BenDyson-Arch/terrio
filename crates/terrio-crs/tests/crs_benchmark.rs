@@ -318,3 +318,16 @@ fn quoted_proj_string_values_read_as_in_proj() {
         assert!((lo - lon).abs() < 1e-9 && (la - lat).abs() < 1e-9, "{definition}: ({lo}, {la})");
     }
 }
+
+#[test]
+fn unterminated_quoted_proj_values_are_refused() {
+    // GDAL 3.12.2 / PROJ 9.8.1 refuses these definitions as CRSs.
+    // In particular, a malformed title must not swallow a following scale.
+    for definition in [
+        "+proj=tmerc +title=\"abc +k=0.9996 +datum=WGS84",
+        "+proj=tmerc +datum=WGS84 +title=\"abc +k=0.9996",
+        "+init=epsg:4326 +title=\"abc",
+    ] {
+        assert!(SpatialRef::from_proj4(definition).is_err(), "{definition}");
+    }
+}

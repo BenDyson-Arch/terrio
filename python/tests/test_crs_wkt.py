@@ -303,3 +303,13 @@ def test_vector_conversion_promotes_existing_heights_and_preserves_2d(tmp_path):
         for point, height in zip(coordinates[:2], expected):
             assert abs(point[2] - height) < 0.001
         assert len(coordinates[2]) == 2
+
+
+def test_unterminated_proj_value_is_an_error():
+    with pytest.raises(terrio.CRSError, match="unterminated quoted PROJ value"):
+        terrio.transform_points(
+            [10.0],
+            [40.0],
+            "EPSG:4326",
+            '+proj=tmerc +datum=WGS84 +title="abc +k=0.9996',
+        )
