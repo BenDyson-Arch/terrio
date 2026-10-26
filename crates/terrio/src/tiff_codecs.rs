@@ -559,6 +559,10 @@ impl ChunkCodec {
             }
             offset = offset.checked_add(length).ok_or(TiffError::LimitsExceeded)?;
         }
+        if channels != self.spp && !(self.lerc_alpha && channels.checked_add(1) == Some(self.spp)) {
+            return Err(invalid("LERC: decoded channel count differs from TIFF"));
+        }
+
         Ok(())
     }
 
@@ -602,10 +606,12 @@ impl ChunkCodec {
         // Samples interleaved by pixel, with a validity mask per sample.
         let (mut samples, masks): (Vec<f64>, Vec<Option<Vec<u8>>>) = if bands > 1 {
             // A floating-point image with one blob per sample.
+            let count = n.checked_mul(bands).ok_or(TiffError::LimitsExceeded)?;
+            count.checked_mul(std::mem::size_of::<f64>()).ok_or(TiffError::LimitsExceeded)?;
             let set = lerc_reader::decode_band_set(&blob).map_err(lerc_err)?;
             let (_, planes, masks) = set.into_parts();
             let planes: Vec<Vec<f64>> = planes.iter().map(pixels_f64).collect();
-            let mut out = vec![0.0; n * bands];
+            let mut out = vec![0.0; count];
             for (b, p) in planes.iter().enumerate() {
                 for (i, v) in p.iter().take(n).enumerate() {
                     out[i * bands + b] = *v;
@@ -961,6 +967,26 @@ mod tests {
             let codec = ChunkCodec { codec: Codec::Lerc, limit: 1024, ..packed(8, 2) };
             let error = codec.lerc(blob, 4, 4).unwrap_err();
             assert!(matches!(error, TiffError::LimitsExceeded), "{error}");
+        }
+    }
+
+    #[cfg(feature = "lerc")]
+    #[test]
+    fn lerc_header_counts_allow_full_channels_and_mask_alpha_only() {
+        for alpha in [false, true] {
+            let codec = ChunkCodec { codec: Codec::Lerc, sample: Sample::U8, limit: 1024, lerc_alpha: alpha, ..packed(8, 3) };
+            for bands in 1..=4 {
+                let pixels = vec![1_u8; 4 * bands];
+                let view = lerc_writer::BandSetView::new(2, 2, 1, bands, lerc_core::BandLayout::Bsq, &pixels).unwrap();
+                let raw = lerc_writer::encode_band_set(view, None, lerc_writer::EncodeOptions::new()).unwrap();
+                let allowed = bands == 3 || (alpha && bands == 2);
+                assert_eq!(codec.lerc_headers(&raw, 2, 2).is_ok(), allowed, "alpha={alpha}, bands={bands}");
+                if allowed {
+                    let pixels = codec.lerc(raw, 2, 2).unwrap();
+                    let expected = if bands == 2 { [1, 1, 255] } else { [1, 1, 1] };
+                    assert_eq!(pixels, expected.repeat(4));
+                }
+            }
         }
     }
 
