@@ -294,3 +294,19 @@ fn versioned_authority_references_match_proj() {
         assert!((y - 4_865_942.279_503_175).abs() < 1e-7, "{reference}: {y}");
     }
 }
+
+#[test]
+fn quoted_proj_string_values_read_as_in_proj() {
+    // GDAL 3.13.3 / PROJ 9.9.0 read values in double quotes, with `""` for a quote inside.
+    let geo = SpatialRef::from_proj4("+proj=longlat +datum=WGS84").unwrap();
+    for (definition, (lon, lat)) in [
+        (r#"+proj="aea" +lat_1="30" +lat_2=40 +datum=WGS84"#, (0.794410772738, 2.057853143328)),
+        (r#"+proj=tmerc +k="0.9996" +datum=WGS84"#, (0.899082904747, 1.809232575375)),
+        (r#"+proj=tmerc +ellps=WGS84 +towgs84="1,2,3""#, (0.898740777200, 1.808535889369)),
+        (r#"+proj=tmerc +title="UTM ""zone"" 32" +k=0.9996 +lon_0=9 +datum=WGS84"#, (9.899082904747, 1.809232575375)),
+    ] {
+        let projected = SpatialRef::from_proj4(definition).unwrap();
+        let (lo, la) = Transformer::new(&projected, &geo).unwrap().transform(100_000.0, 200_000.0).unwrap();
+        assert!((lo - lon).abs() < 1e-9 && (la - lat).abs() < 1e-9, "{definition}: ({lo}, {la})");
+    }
+}

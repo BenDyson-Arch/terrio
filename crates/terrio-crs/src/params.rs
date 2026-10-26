@@ -7,15 +7,17 @@ pub(crate) struct Params {
 }
 
 impl Params {
-    /// Parses `+proj=utm +zone=33 +south` (the `+` signs are optional).
+    /// Parses `+proj=utm +zone=33 +south` (the `+` signs are optional). As in PROJ, a value may
+    /// be in double quotes (`+title="UTM 32"`), with `""` for a quote inside.
     pub fn parse(s: &str) -> Self {
-        let items = s
-            .split_whitespace()
-            .map(|t| t.trim_start_matches('+'))
-            .filter(|t| !t.is_empty())
-            .map(|t| match t.split_once('=') {
-                Some((k, v)) => (k.to_string(), Some(v.to_string())),
-                None => (t.to_string(), None),
+        let items = tokens(s)
+            .into_iter()
+            .filter_map(|t| {
+                let t = t.trim_start_matches('+');
+                (!t.is_empty()).then(|| match t.split_once('=') {
+                    Some((k, v)) => (k.to_string(), Some(v.to_string())),
+                    None => (t.to_string(), None),
+                })
             })
             .collect();
         Self { items }
@@ -50,6 +52,25 @@ impl Params {
     pub fn list(&self, key: &str) -> Option<Vec<f64>> {
         self.str(key).map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
     }
+}
+
+/// The whitespace-separated tokens of a PROJ string, without the double quotes around values.
+fn tokens(s: &str) -> Vec<String> {
+    let (mut out, mut token, mut quoted) = (Vec::new(), String::new(), false);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                token.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => out.extend((!token.is_empty()).then(|| std::mem::take(&mut token))),
+            c => token.push(c),
+        }
+    }
+    out.extend((!token.is_empty()).then_some(token));
+    out
 }
 
 /// Parses decimal degrees or PROJ's DMS notation into degrees.
@@ -98,5 +119,14 @@ mod tests {
         assert!((p.angle("lat_0").unwrap().to_degrees() - 40.5).abs() < 1e-12);
         assert_eq!(parse_dms("-74.5"), Some(-74.5));
         assert_eq!(parse_dms("74d30W"), Some(-74.5));
+    }
+
+    #[test]
+    fn values_may_be_quoted() {
+        let p = Params::parse(r#"+proj="aea" +title="UTM ""zone"" 32"  +towgs84="1,2,3" +no_defs"#);
+        assert_eq!(p.str("proj"), Some("aea"));
+        assert_eq!(p.str("title"), Some(r#"UTM "zone" 32"#));
+        assert_eq!(p.list("towgs84"), Some(vec![1.0, 2.0, 3.0]));
+        assert!(p.has("no_defs"));
     }
 }

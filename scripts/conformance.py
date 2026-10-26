@@ -952,6 +952,10 @@ PROJ_CASES = {
                 "winkel_tripel_explicit_parallel_matches_operation_oracle": "Winkel Tripel: explicit lat_1=acos(2/pi) against PROJ's operation default",
             }.items()
         },
+        "quoted_proj_string_values_read_as_in_proj": (
+            "PROJ strings with values in double quotes", TOLERANCE,
+            "within 1e-9 degrees of GDAL 3.13.3 / PROJ 9.9.0",
+        ),
     },
     "geostationary": {
         "goes16_sweep_x_matches_proj": "GOES-16: `+proj=geos +h=35786023 +lon_0=-75 +sweep=x +ellps=GRS80`",
