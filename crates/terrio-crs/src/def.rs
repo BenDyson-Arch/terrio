@@ -737,6 +737,13 @@ impl Def {
     }
 
     /// Whether coordinates have a height: a geographic 3D or a compound CRS.
+    /// Makes a 2D CRS 3D, with ellipsoidal heights (GDAL's `PromoteTo3D`).
+    pub fn promote_to_3d(&mut self) {
+        if !self.geocentric && self.vertical.is_none() {
+            self.three_d = true;
+        }
+    }
+
     pub fn has_height(&self) -> bool {
         self.three_d || self.geocentric || self.vertical.is_some()
     }

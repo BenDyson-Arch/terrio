@@ -784,6 +784,7 @@ pub fn transform_points(
         target_coordinate_epoch: o.t_coord_epoch,
         allow_ballpark: o.allow_ballpark,
         only_best: o.only_best,
+        ..Default::default()
     };
     let t = Transformer::with_options(&src, &dst, &opts).map_err(js_err)?;
     let (mut ox, mut oy, mut oz) = (Vec::with_capacity(xs.len()), Vec::with_capacity(ys.len()), Vec::new());

@@ -925,6 +925,10 @@ pub struct TransformOptions {
     pub allow_ballpark: Option<bool>,
     /// Require the best operation assuming all grids were available (GDAL's ONLY_BEST).
     pub only_best: bool,
+    /// Take the heights of 2D CRSs (without heights of their own) as ellipsoidal heights, so
+    /// that datum transformations change them, as GDAL does after `PromoteTo3D` on both CRSs.
+    /// By default they are kept as they are, as GDAL keeps them between 2D CRSs.
+    pub promote_to_3d: bool,
 }
 
 impl TransformOptions {
@@ -1137,6 +1141,10 @@ impl Transformer {
     /// epoch when both are dynamic and both epochs are given.
     pub fn with_options(src: &SpatialRef, dst: &SpatialRef, opts: &TransformOptions) -> Result<Self> {
         let (mut s, mut d) = (Def::new(src)?, Def::new(dst)?);
+        if opts.promote_to_3d {
+            s.promote_to_3d();
+            d.promote_to_3d();
+        }
         let cartesian_src = s.is_geocentric().then(|| s.clone());
         let cartesian_dst = d.is_geocentric().then(|| d.clone());
         if cartesian_src.is_some() {

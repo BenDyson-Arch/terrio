@@ -259,6 +259,9 @@ pub struct TransformOptions {
     pub allow_ballpark: Option<bool>,
     /// Require the best operation assuming all grids were available (GDAL's ONLY_BEST).
     pub only_best: bool,
+    /// Take the heights of 2D CRSs as ellipsoidal heights, so that datum transformations change
+    /// them, as GDAL does after `PromoteTo3D` on both CRSs. Off by default, as in GDAL.
+    pub promote_to_3d: bool,
 }
 
 impl From<&TransformOptions> for terrio_crs::TransformOptions {
@@ -268,6 +271,7 @@ impl From<&TransformOptions> for terrio_crs::TransformOptions {
             target_coordinate_epoch: value.target_coordinate_epoch,
             allow_ballpark: value.allow_ballpark,
             only_best: value.only_best,
+            promote_to_3d: value.promote_to_3d,
         }
     }
 }
@@ -278,6 +282,7 @@ impl From<terrio_crs::TransformOptions> for TransformOptions {
             target_coordinate_epoch: value.target_coordinate_epoch,
             allow_ballpark: value.allow_ballpark,
             only_best: value.only_best,
+            promote_to_3d: value.promote_to_3d,
         }
     }
 }

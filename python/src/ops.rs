@@ -836,8 +836,13 @@ fn transform_points<'py>(
     }
     let src = SpatialRef::parse(src_crs).py()?;
     let dst = SpatialRef::parse(dst_crs).py()?;
-    let opts =
-        TransformOptions { source_coordinate_epoch: s_coord_epoch, target_coordinate_epoch: t_coord_epoch, allow_ballpark, only_best };
+    let opts = TransformOptions {
+        source_coordinate_epoch: s_coord_epoch,
+        target_coordinate_epoch: t_coord_epoch,
+        allow_ballpark,
+        only_best,
+        ..Default::default()
+    };
     let (ox, oy, oz) = crate::with_warnings(py, || -> terrio::Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
         let t = Transformer::with_options(&src, &dst, &opts)?;
         let mut ox = Vec::with_capacity(xs.len());
