@@ -142,9 +142,11 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         if !matches!(
             tag,
             PHOTOMETRIC
+                | 258
                 | 259
                 | 277
                 | 338
+                | 339
                 | MODEL_PIXEL_SCALE
                 | MODEL_TIEPOINT
                 | MODEL_TRANSFORMATION
@@ -288,6 +290,12 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
     }
     out.rpc = doubles(RPC_COEFFICIENTS).filter(|v| v.len() == 92).map(<[f64]>::to_vec);
     out.nodata = ascii(GDAL_NODATA).and_then(|s| parse_nodata(s.trim()));
+    // GDAL rounds the nodata value of Float32 bands to Float32, so that it equals the samples
+    // written with it (-9999.1 is -9999.099609375).
+    let first = |tag: u16| shorts(tag).and_then(|s| s.first()).copied();
+    if first(258) == Some(32) && first(339) == Some(3) {
+        out.nodata = out.nodata.map(|v| v as f32 as f64);
+    }
     out.metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_metadata).unwrap_or_default();
     out.band_metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_band_metadata).unwrap_or_default();
 
