@@ -250,6 +250,7 @@ fn promoted_vector_heights_match_gdal_and_keep_geometry_dimensions() {
             ),
             (4.367683424792349, 52.006949098822965, None),
         ];
+        assert_eq!(output.features.len(), expected.len());
         for (feature, (x, y, z)) in output.features.iter().zip(expected) {
             let Some(terrio::Geometry::Point(point)) = &feature.geometry else { panic!("expected a point") };
             assert!((point.x - x).abs() < 1e-8 && (point.y - y).abs() < 1e-8);
