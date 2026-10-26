@@ -87,8 +87,8 @@ pub struct WindowOptions {
 /// window a read returns is not bounded by it: check the window's size before reading it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TiffReadLimits {
-    /// The most bytes one decoded chunk may take. The `tiff` crate bounds the size of tag values
-    /// (such as the chunk offsets) by it too.
+    /// The most bytes one decoded chunk may take. The `tiff` crate (0.11) bounds the size of tag
+    /// values, such as the chunk offsets, by the same limit.
     pub chunk_bytes: usize,
 }
 
@@ -108,8 +108,20 @@ impl TiffReadLimits {
     /// count they declare (as GDAL reads them), so their size is not limited.
     pub(crate) fn tiff(self) -> Limits {
         let mut l = Limits::unlimited();
+        // `tiff` 0.11 bounds tag values by `decoding_buffer_size` and reads `ifd_value_size`
+        // nowhere; both are set, should a later version read it.
         l.decoding_buffer_size = self.chunk_bytes;
+        l.ifd_value_size = self.chunk_bytes;
         l
+    }
+
+    /// The error of a TIFF decoder with these limits: [`Error::DecodedLimitExceeded`], with the
+    /// limit, for a chunk or tag value over it.
+    pub(crate) fn error(self) -> impl Fn(tiff::TiffError) -> Error + Sync + Copy {
+        move |e| match e {
+            tiff::TiffError::LimitsExceeded => Error::DecodedLimitExceeded { resource: "TIFF chunk or tag value", limit: self.chunk_bytes },
+            e => tiff_err(e),
+        }
     }
 }
 
@@ -1040,6 +1052,7 @@ impl TiffRaster {
         let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         let masks = crate::tiff_mask::find_masks(&mut source);
         source.seek(SeekFrom::Start(0))?;
+        let tiff_err = limits.error();
         let mut dec = Decoder::new(PatchedReader::new(source, &tags)).map_err(tiff_err)?.with_limits(limits.tiff());
         let (w, h) = dec.dimensions().map_err(tiff_err)?;
         let bands = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
@@ -1082,7 +1095,7 @@ impl TiffRaster {
             .ok_or_else(|| {
                 Error::InvalidArgument(format!("a window of {}x{} pixels in {} band(s) is too large", w.width, w.height, bands.len()))
             })?;
-
+        let tiff_err = self.limits.error();
         let ifd = self.levels[level].ifd;
         let dec = &mut self.decoder;
         if self.current_ifd != ifd {

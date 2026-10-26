@@ -722,7 +722,10 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     use tiff::tags::Tag;
     use wbraster::raster::RasterData;
 
-    let tiff_err = |e: tiff::TiffError| Error::InvalidData(format!("{}: {e}", path.display()));
+    let tiff_err = |e: tiff::TiffError| match e {
+        tiff::TiffError::LimitsExceeded => limits.error()(e),
+        e => Error::InvalidData(format!("{}: {e}", path.display())),
+    };
     let mut tags = read_geo_tags(path).unwrap_or_default();
     tags.apply_sidecar_crs(path);
     tags.warn_unreadable(&path.display().to_string());

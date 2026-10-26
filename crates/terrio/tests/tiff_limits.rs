@@ -70,7 +70,9 @@ fn a_huge_declared_strip_is_an_error() {
         let mut r = LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
         assert_eq!((r.width(), r.height()), (1_000_000, 1_000_000));
         let e = r.read_window(Window::new(0, 0, 4, 4), &band1()).unwrap_err();
-        assert!(e.to_string().contains("decoding limits"), "{e}");
+        let limit = TiffReadLimits::default().chunk_bytes;
+        assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: l, .. } if l == limit), "{e}");
+        assert!(e.to_string().contains(&limit.to_string()), "{e}");
     }
 }
 
@@ -178,7 +180,7 @@ fn eager_reads_apply_selected_limits_to_reopened_decoders() {
     pool.install(|| {
         let path = path.to_str().unwrap();
         let read = |limit| terrio::open_raster_with_tiff_limits(path, TiffReadLimits { chunk_bytes: limit });
-        assert!(read(63).is_err());
+        assert!(matches!(read(63), Err(terrio::Error::DecodedLimitExceeded { limit: 63, .. })));
         for limit in [64, usize::MAX] {
             let result = read(limit).unwrap();
             assert_eq!(result.raster.data.len(), values.len());
