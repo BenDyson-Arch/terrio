@@ -259,8 +259,17 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         for item in crate::drivers::gtiff_write::gdal_metadata_items(xml) {
             let Some(i) = item.attr("sample").and_then(|s| s.parse::<usize>().ok()) else { continue };
             let Some(band) = out.band_properties.get_mut(i) else { continue };
-            if item.attr("role") == Some("colorinterp") && item.attr("domain").is_none() {
-                band.color_interp = Some(color_interpretation(&item.text).into());
+            if item.attr("domain").is_some() {
+                continue;
+            }
+            // The band properties GDAL writes as items with a role (`GDALMetadata` of the GTiff driver).
+            match item.attr("role") {
+                Some("colorinterp") => band.color_interp = Some(color_interpretation(&item.text).into()),
+                Some("scale") => band.scale = item.text.trim().parse().ok(),
+                Some("offset") => band.offset = item.text.trim().parse().ok(),
+                Some("unittype") => band.unit = Some(crate::drivers::gtiff_write::xml_unescape(&item.text)),
+                Some("description") => band.description = Some(crate::drivers::gtiff_write::xml_unescape(&item.text)),
+                _ => {}
             }
         }
     }
