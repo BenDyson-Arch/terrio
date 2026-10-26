@@ -385,6 +385,10 @@ fn write_vector(
 ///     nln: The output layer name.
 ///     nlt: Convert geometries: `"PROMOTE_TO_MULTI"`, `"POINT"`, `"MULTIPOLYGON"`...
 ///     explodecollections: Write each part of multi-part geometries as its own feature.
+///     simplify: Simplify geometries with this tolerance, preserving topology, before
+///         reprojection (`ogr2ogr -simplify`).
+///     segmentize: Add vertices so that no segment is longer than this, before reprojection
+///         (`ogr2ogr -segmentize`).
 ///     s_srs: The CRS of the input, overriding what it declares.
 ///     a_srs: Assign this CRS to the output, without reprojecting.
 ///     append: Add the features to the layers of an existing output.
@@ -396,7 +400,7 @@ fn write_vector(
 #[pyo3(signature = (
     src, dst, *, format=None, layers=None, t_srs=None, compress=None, tile_size=None, bigtiff=false, srcwin=None,
     overview=None, r#where=None, spat=None, spat_srs=None, select=None, limit=None, sql=None, nln=None, nlt=None,
-    explodecollections=false, s_srs=None, a_srs=None, append=false, overwrite=false, ct_opt=None
+    explodecollections=false, simplify=None, segmentize=None, s_srs=None, a_srs=None, append=false, overwrite=false, ct_opt=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn convert(
@@ -420,12 +424,20 @@ fn convert(
     nln: Option<String>,
     nlt: Option<&str>,
     explodecollections: bool,
+    simplify: Option<f64>,
+    segmentize: Option<f64>,
     s_srs: Option<&str>,
     a_srs: Option<&str>,
     append: bool,
     overwrite: bool,
     ct_opt: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<()> {
+    use terrio::ops::vector_geom::GeometryOp;
+    if simplify.is_some() && segmentize.is_some() {
+        return Err(invalid("simplify and segmentize cannot be combined"));
+    }
+    // As ogr2ogr, values that are not positive leave the geometries unchanged.
+    let geometry_op = GeometryOp::from_ogr2ogr(simplify, segmentize);
     let transform_options = TransformOptions::from_strict_options(&ct_opt.unwrap_or_default().into_iter().collect::<Vec<_>>()).py()?;
     let t_srs = srs(t_srs)?;
     let vector_options = VectorTranslateOptions {
@@ -438,6 +450,8 @@ fn convert(
         layer_name: nln,
         geometry_type: nlt.map(GeometryConversion::parse).transpose().py()?,
         explode_collections: explodecollections,
+        geometry_op,
+        strict_geometry_op: false,
         src_srs: srs(s_srs)?,
         dst_srs: t_srs.clone(),
         assign_srs: srs(a_srs)?,
@@ -451,6 +465,8 @@ fn convert(
         || vector_options.layer_name.is_some()
         || vector_options.geometry_type.is_some()
         || vector_options.explode_collections
+        || simplify.is_some()
+        || segmentize.is_some()
         || vector_options.src_srs.is_some()
         || vector_options.assign_srs.is_some()
         || append
@@ -539,7 +555,7 @@ fn convert(
 }
 
 /// Opens the layers given to an operation: a path, or layers in memory.
-fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -> PyResult<Vec<terrio::Layer>> {
+pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -> PyResult<Vec<terrio::Layer>> {
     match src.extract::<String>() {
         Ok(path) => {
             let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
