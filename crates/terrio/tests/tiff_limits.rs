@@ -151,9 +151,11 @@ fn a_window_too_large_to_allocate_is_an_error() {
 
 #[test]
 fn a_window_that_cannot_be_allocated_is_an_error() {
-    // 10^6 x 10^6 Float64 pixels (8 TB): a size that does not overflow, but that no allocation
-    // holds. The full window aborted the process, before any chunk was read.
-    let bytes = single_strip(1_000_000, 1_000_000, 128, false);
+    // 11.2 x 10^6 squared Float64 pixels (1 PB): under `isize::MAX`, so the window is not refused
+    // as too large, but over the address space of any 64-bit system (at most 256 TB to a
+    // process), so no reservation of it succeeds, whatever the system's overcommit policy. The
+    // full window aborted the process, before any chunk was read.
+    let bytes = single_strip(11_200_000, 11_200_000, 128, false);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("huge.tif");
     std::fs::write(&path, &bytes).unwrap();
