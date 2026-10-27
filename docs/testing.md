@@ -274,7 +274,7 @@ asked for them:
 
 | Job | Pull requests |
 | --- | --- |
-| real data vs GDAL (`ci.yml`) | Runs unless the PR changes only docs, Markdown, `js/` (other than its Rust code), `packaging/` or other workflows |
+| real data vs GDAL (`ci.yml`) | Skipped only when every changed path (renamed-from paths included) is under `docs/` or `site/`, a root-level Markdown file, `js/` (except its Rust code and `Cargo.toml`), `packaging/`, or `.github/` (except `ci.yml`), or is one of `zensical.toml`, `requirements_docs.txt`, `CITATION.cff`, `about.hbs` or `about.toml`; a PR listing 3000 or more paths always runs |
 | npm package (`ci-extended.yml`) | Label `ci:npm` or `ci:all`; the `wasm` job tests the Node.js package on every PR |
 | point clouds and conformance vs GDAL (`ci-extended.yml`) | Label `ci:conformance` or `ci:all` |
 | macOS and Windows (`ci-platforms.yml`) | Label `ci:macos`, `ci:windows` or `ci:all` |
