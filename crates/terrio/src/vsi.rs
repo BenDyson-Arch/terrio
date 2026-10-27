@@ -1443,12 +1443,13 @@ fn absolute_name(path: &str, node: &Node, name: &str) -> String {
         let joined = if name.is_empty() { base.clone() } else { format!("{}/{name}", base.trim_end_matches('/')) };
         return listing::redact_url(&if query.is_empty() { joined } else { format!("{joined}?{query}") }).into_owned();
     }
-    let base = match node {
-        Node::Local(p) => {
-            std::path::absolute(p).map(|p| p.display().to_string()).unwrap_or_else(|_| listing::redact_url(path.trim()).into_owned())
-        }
-        _ => listing::redact_url(path.trim()).into_owned(),
-    };
+    // Local entries resolve as one path, which gives native separators on Windows.
+    if let Node::Local(p) = node
+        && let Ok(abs) = std::path::absolute(if name.is_empty() { p.clone() } else { p.join(name) })
+    {
+        return abs.display().to_string();
+    }
+    let base = listing::redact_url(path.trim()).into_owned();
     let base = base.trim_end_matches('/');
     if name.is_empty() { base.to_string() } else { format!("{base}/{name}") }
 }
@@ -2054,13 +2055,25 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
             listing::redact_url(dst)
         )));
     }
-    if stat_node(&target)?.is_some_and(|t| t.dir) {
-        return Err(Error::InvalidArgument(format!("'{}' is a directory that exists", display_node(&target))));
+    match stat_node(&target)? {
+        Some(t) if t.dir => {
+            return Err(Error::InvalidArgument(format!("'{}' is a directory that exists", display_node(&target))));
+        }
+        // POSIX rename fails here (ENOTDIR). Windows, and the copy fallback, would put the
+        // directory where the file was, or its children under the file's name.
+        Some(_) if stat.dir => {
+            return Err(Error::InvalidArgument(format!("cannot replace '{}' with a directory", display_node(&target))));
+        }
+        _ => {}
     }
     if let (Node::Local(a), Node::Local(b)) = (&src_node, &target) {
         match std::fs::symlink_metadata(b) {
             Ok(meta) if !meta.file_type().is_file() && !meta.file_type().is_symlink() => {
                 return Err(Error::Unsupported(format!("'{}': refusing to replace a non-regular file", b.display())));
+            }
+            // A link that does not resolve, which the check above does not see.
+            Ok(_) if stat.dir => {
+                return Err(Error::InvalidArgument(format!("cannot replace '{}' with a directory", b.display())));
             }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
