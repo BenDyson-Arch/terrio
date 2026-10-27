@@ -4,14 +4,22 @@
 mod arrow;
 #[cfg(not(target_os = "emscripten"))]
 mod cli;
+mod focal;
+mod grid;
+mod manage;
 mod multidim;
 mod ops;
+mod pixel;
 mod pointcloud;
+mod query;
 mod raster;
 mod rio;
 mod stream;
 mod terrain;
 mod vector;
+mod vector_dataset;
+mod vector_geom;
+mod vsi;
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -82,11 +90,19 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<arrow::PyArrowTable>()?;
     m.add_function(wrap_pyfunction!(arrow::from_arrow, m)?)?;
     ops::register(m)?;
+    manage::register(m)?;
+    grid::register(m)?;
     multidim::register(m)?;
     terrain::register(m)?;
+    query::register(m)?;
+    pixel::register(m)?;
+    focal::register(m)?;
     pointcloud::register(m)?;
     rio::register(m)?;
     stream::register(m)?;
+    vector_geom::register(m)?;
+    vsi::register(m)?;
+    vector_dataset::register(m)?;
     #[cfg(not(target_os = "emscripten"))]
     cli::register(m)?;
     Ok(())

@@ -67,6 +67,20 @@ comparisons in the GDAL conformance workflow, and exposes applicable functionali
 Rust, CLI, Python, JavaScript and MCP. Supported subsets and numerical tolerances remain
 documented; additional feature scope belongs in separate tracking issues.
 
+## In progress: Additional GDAL command coverage
+
+[#289](https://github.com/opengeos/terrio/issues/289) tracks the remaining unified GDAL
+commands. Command-group progress:
+
+- [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
+      geometry-type conversion, grouped combine and spatial sort. Landed in
+      [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and
+      JavaScript, with GDAL/GEOS comparisons and documented tolerances.
+- [ ] Vector gridding and linear referencing: every `gdal_grid` algorithm (search ellipses,
+      quadtree order, per-quadrant limits) as `terrio vector-grid`, and `ogrlineref` as
+      `terrio lineref`. Proposed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
+      CLI/MCP, Python and JavaScript, with real-data comparisons registered in conformance.
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field
@@ -93,6 +107,11 @@ documented; additional feature scope belongs in separate tracking issues.
 
 ## 0.3: Processing
 
+- [x] Raster query commands: compare, pixel-info and XYZ export through Rust, CLI/MCP,
+      Python and JavaScript, with windowed reads, native streaming, GDAL 3.13.3
+      comparisons and documented differences. [#303](https://github.com/opengeos/terrio/pull/303),
+      part of the [#289 command tracker](https://github.com/opengeos/terrio/issues/289).
+
 - [x] Warp: reprojection and resampling (nearest, bilinear, cubic, average, mode), with output
       extent and resolution control.
 - [x] Translate: subset by window or bounds, change data type, scale, add overviews, write COGs.
@@ -103,6 +122,14 @@ documented; additional feature scope belongs in separate tracking issues.
       hillshade, slope, aspect, color relief, TRI, TPI, roughness), `terrio calc` (`gdal_calc.py`,
       with NumPy's typing rules), `terrio proximity` (`gdal_proximity.py`) and `terrio sieve`
       (`gdal_sieve.py`).
+- [x] Raster pixel operations (`unscale`, `nodata-to-alpha`, `reclassify`, `as-features`)
+      across Rust, CLI/MCP, Python and WebAssembly. Landed in [#299](https://github.com/opengeos/terrio/pull/299).
+- [x] Focal statistics and kernels (`neighbors`), collar cleaning (`clean-collar` / `nearblack`)
+      and LUT contrast enhancement (`enhance`) across Rust, CLI/MCP, Python and WebAssembly
+      ([#300](https://github.com/opengeos/terrio/pull/300)).
+- [x] Geometry type conversion, simplify/segmentize, concave and convex hulls, grouped combine,
+      spatial sorting and coordinate swapping across the public APIs
+      ([#306](https://github.com/opengeos/terrio/pull/306)).
 - [x] Centroids, multipart splitting, vertex extraction, exact valid-data raster footprints and
       point sampling across multiple rasters, through the Rust API, CLI and MCP.
 - [x] Polygonization preserves exterior rings and holes on south-up and rotated grids, and
@@ -256,8 +283,9 @@ documented; additional feature scope belongs in separate tracking issues.
       `filters.approximatecoplanar`, `filters.estimaterank`, `filters.lof`, `filters.nndistance`,
       `filters.radialdensity`, `filters.reciprocity`, `filters.miniball`, `filters.zsmooth`,
       `filters.skewnessbalancing`, `filters.head`, `filters.tail`, `filters.sort`, `filters.locate`,
-      `filters.iqr`, `filters.mad`, `filters.dem`, `filters.colorization` and `filters.overlay`,
-      identical to PDAL's on autzen (nanoflann's neighbours, libstdc++'s sort and Eigen's
+      `filters.iqr`, `filters.mad`, `filters.dem`, `filters.colorization`, `filters.overlay` and
+      `filters.hexbin` (boundaries on hexer's hexagons; not its H3 grids), identical to PDAL's on
+      autzen (nanoflann's neighbours, libstdc++'s sort and Eigen's
       eigensolver as PDAL runs them; `terrio filter`, Python and JavaScript).
 - [ ] PDAL's long tail of filters (`filters.optimalneighborhood`, `filters.neighborclassifier`,
       `filters.radiusassign`, `filters.hag_dem`, `filters.voxelcentroidnearestneighbor`,
@@ -480,6 +508,20 @@ WebAssembly (the `terrio-js` npm package):
       Rust, CLI and MCP (`terrio crs --projjson`), Python (`CRS.to_projjson()`) and JavaScript
       (`crsToProjjson`), compared with live PROJ/GDAL by `scripts/conformance.py`.
 - IAU and additional projection capabilities remain scoped separately in #271–#272.
+
+## ndarray interoperability (#298)
+
+The optional `ndarray` feature (off by default): raster pixels as `ndarray` arrays, without
+copying, converting or reordering them.
+
+- [x] Borrowed and mutable views of a raster's pixels (`RasterArrayExt`): `(bands, rows, cols)`
+      arrays and single bands, and mutable band views that do not overlap, for parallel updates.
+- [x] Owned transfers between datasets and `Array3`/`Array2` (`RasterDataset::into_array3`,
+      `from_array3` and their two-dimensional forms), the metadata kept in a header.
+- [x] Lazy reads: windows moved into arrays, masks read as `Array2<u8>`
+      (`LazyRaster::read_mask_array2`).
+- Out of scope: complex bands as `Complex<T>` (they are viewed as their component bands),
+  `multidim::Buffer`, and decoding into caller-provided buffers.
 
 ## Decisions
 

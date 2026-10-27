@@ -128,6 +128,47 @@ let back = layer_from_arrow(&table.schema, &table.batches, "countries")?;
 # Ok::<(), terrio::Error>(())
 ```
 
+## ndarray
+
+With the `ndarray` feature (`features = ["ndarray"]`, off by default), raster pixels are
+[ndarray](https://docs.rs/ndarray) arrays, without copying them. A raster's buffer holds its bands
+one after the other, each row after row from the top: the standard layout of an array of shape
+`(bands, rows, cols)`. The crate is re-exported as `terrio::ndarray`.
+
+```rust,no_run
+use terrio::{RasterArrayExt, RasterDataset};
+
+let mut dem = terrio::open_raster("dem.tif")?;
+let pixels = dem.raster.view3::<f32>()?; // an ArrayView3 of the raster's buffer
+for mut band in dem.raster.split_bands_mut::<f32>()? {
+    band.mapv_inplace(|z| z * 3.28084); // with rayon: `.into_par_iter()` on the vector
+}
+let (array, header) = dem.into_array3::<f32>()?; // an owned Array3: the same buffer
+let dem = RasterDataset::from_array3(header, array)?; // and back, with the metadata
+# Ok::<(), terrio::Error>(())
+```
+
+- `RasterArrayExt` views a raster's pixels (`view3`, `view3_mut`) or a band of them (`band_view2`,
+  `band_view2_mut`), borrowed or mutable, and splits the bands into mutable views that do not
+  overlap (`split_bands_mut`), for threads.
+- `RasterDataset::into_array3` (`into_array2` for one band) moves the pixel buffer into an owned
+  array and returns the rest of the dataset, a header without pixels; `RasterDataset::from_array3`
+  (`from_array2`) moves an array's buffer into a header.
+- `LazyRaster::read_window` returns a dataset, which `into_array3` moves into an array, and
+  `LazyRaster::read_mask_array2` reads a window's mask (255 for valid pixels, 0 for invalid ones)
+  as an `Array2<u8>`.
+
+Nothing is copied, converted, reordered or reallocated, so what would need it fails instead,
+giving its input back exactly (`ArrayError`): the type asked for must be the pixels' (`f32` for
+`Float32`) and the raster's declared data type, and an owned array must be in standard layout
+and own exactly its elements. An array refused is given back with the same buffer, first element
+and strides; its axes of length 1 must therefore have strides it can be rebuilt with (those of
+construction, slicing, `insert_axis` or permuted axes), others being refused before the array is
+taken apart. Nodata pixels keep the nodata value (no NaN is substituted), masks stay separate
+arrays, and complex datasets are their stored component bands: each complex band's real parts,
+then its imaginary parts. Bands are numbered from 0, as along the arrays' first axis. Reading and
+decoding still allocate: the guarantee covers the buffers once read.
+
 ## Reading windows lazily
 
 ```rust,no_run
@@ -153,6 +194,17 @@ let fgb: Vec<u8> = terrio::memory::write_vector_bytes(&ds.layers, "countries.fgb
 rasters; `vector_filter` (with the `sql` parser), `rasterize` and `polygonize`; `dem`, `calc`
 (with its expression parser and NumPy-typed evaluator), `proximity` and `sieve`. Each takes an
 options struct mirroring the command-line options.
+
+`ops::neighbors::{neighbors, neighbors_to_path}` computes focal statistics (`gdal raster
+neighbors`) from `NeighborsOptions` (kernels, `NeighborMethod`s, size, band, output type and
+`NeighborsNodata`); the `_to_path` form reads a `LazyRaster` and writes GeoTIFF/COG strips.
+`ops::nearblack::{nearblack, nearblack_in_place}` cleans collars (`nearblack`, `gdal raster
+clean-collar`) from `NearblackOptions` (colors, `white`, `near`, `max_non_black`, alpha, mask and
+`CollarAlgorithm`), returning a `Collar` (the Byte raster and its mask);
+`keep_alpha_or_mask` applies clean-collar's defaults. `ops::enhance` computes
+`equalization_luts` (or `_from_path`, with GDAL's stored histograms), reads and writes LUT
+files with `parse_luts`/`format_luts`, and applies `BandLut`s with `enhance` or
+`enhance_to_path` (`gdalenhance`).
 
 `ops::geometry::{centroids, singleparts, vertices}` transforms vector layers while preserving
 their CRS and attributes. `ops::footprint::footprint` extracts an exact raster valid-data
@@ -205,6 +257,29 @@ let cleaned = topology::clean(&repaired, &CleanOptions { snap_grid: 0.01 })?;
 The commands are also available through the Python package's `terrio` CLI and MCP. Dedicated
 Python and JavaScript operation bindings are not yet provided for these additions.
 
+`ops::vector_geom` holds the equivalents of GDAL 3.13's `gdal vector simplify`, `segmentize`,
+`convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`, `combine` and `sort` (see
+[Vector geometry commands](cli.md#vector-geometry-commands)). The per-feature operations are
+`GeometryOp` values (`Simplify`, `Segmentize`, `ConvexHull`, `ConcaveHull(ConcaveHullOptions)`,
+`SwapXy`, `SetGeomType(SetGeomTypeOptions)`), applied to a layer with `vector_geom::apply`, or
+to layers read and written as streams through `VectorTranslateOptions::geometry_op` (which is
+also `ogr2ogr`'s `-simplify`/`-segmentize`). `vector_geom::combine` (`CombineOptions`) and
+`vector_geom::sort` (`SortMethod`) take whole layers; `vector_geom::force_to` is OGR's `forceTo`.
+The single-geometry algorithms are `ops::simplify::{simplify_preserve_topology, segmentize}`
+and `ops::hull::{convex_hull, concave_hull, concave_hull_of_polygons}`. They are pure Rust and
+included in WebAssembly builds.
+
+```rust,no_run
+use terrio::ops::vector_geom::{self, CombineOptions, ConcaveHullOptions, GeometryOp, SortMethod};
+
+let ds = terrio::open_vector("places.gpkg", &Default::default())?;
+let groups = vector_geom::combine(&ds.layers[0], &CombineOptions { group_by: vec!["adm0_a3".into()], ..Default::default() })?;
+let hulls = vector_geom::apply(&groups, &GeometryOp::ConcaveHull(ConcaveHullOptions { ratio: 0.3, ..Default::default() }))?;
+let simple = vector_geom::apply(&hulls, &GeometryOp::Simplify { tolerance: 0.01 })?;
+terrio::write_vector(&[vector_geom::sort(&simple, SortMethod::Hilbert)], "hulls.gpkg", &Default::default())?;
+# Ok::<(), terrio::Error>(())
+```
+
 ```rust,no_run
 use terrio::ops::{Resampling, translate, warp};
 
@@ -252,6 +327,119 @@ let visible = viewshed(&dem, &ViewshedOptions {
 
 `ViewshedMode::Dem` and `Ground` return minimum visible elevation or height above the DEM.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
+
+### Vector gridding and linear referencing
+
+```rust
+use terrio::ops::vector_grid::{vector_grid, GridAlgorithm, VectorGridOptions};
+use terrio::ops::lineref::{create_reference, position, LineRefOptions};
+let points = terrio::open_vector("stations.gpkg", &Default::default())?;
+let grid = vector_grid(&points.layers, &VectorGridOptions {
+    algorithm: GridAlgorithm::parse("invdist:power=2:radius=50000:max_points=12")?,
+    z_field: Some("temp".into()),
+    size: Some((200, 200)),
+    ..Default::default()
+})?;
+let route = terrio::open_vector("path.shp", &Default::default())?;
+let stones = terrio::open_vector("mstones.shp", &Default::default())?;
+let parts = create_reference(&route.layers[0], &stones.layers[0], &LineRefOptions {
+    position_field: "pos".into(), step: 1000.0, ..Default::default()
+})?;
+let pos = position(&parts, -1.4345, 51.9497)?;
+# Ok::<(), terrio::Error>(())
+```
+
+`grid_points` grids coordinate arrays directly; `coordinates` and `subline` are the other
+lookups. See [vector-grid](cli.md#vector-grid) and [lineref](cli.md#lineref).
+
+
+### Compare, pixel info and XYZ
+
+```rust,no_run
+use terrio::ops::compare::{compare, CompareOptions};
+use terrio::ops::pixel_info::{pixel_info, PixelInfoOptions, Position, PositionCrs};
+use terrio::ops::xyz::{write_xyz, XyzOptions};
+
+let report = compare("reference.tif", "output.tif", &CompareOptions { skip_binary: true, ..Default::default() })?;
+print!("{}", report.to_text()); // gdal raster compare's lines
+println!("{} difference(s)", report.difference_count());
+
+let mut dem = terrio::open_raster_lazy("dem.tif")?;
+let options = PixelInfoOptions { position_crs: Some(PositionCrs::parse("EPSG:4326")?), ..Default::default() };
+let info = pixel_info(&mut dem, &[Position::new(-105.5, 39.5)], &options)?;
+print!("{}", info.to_text()); // gdallocationinfo's report
+write_xyz(&mut dem, &mut std::io::stdout(), &XyzOptions::default())?;
+# Ok::<(), terrio::Error>(())
+```
+
+`compare_rasters` compares two open `LazyRaster`s (without the binary, RPC and subdataset
+comparisons), `pixel_info_layer` queries at a layer's points, and `PixelInfo` prints GeoJSON,
+CSV, text and `-valonly` output or builds a point layer. See [compare](cli.md#compare),
+[pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz).
+
+### Vector datasets
+
+```rust,no_run
+use terrio::ops::concat::{concat, ConcatMode, ConcatOptions, ConcatSource};
+use terrio::ops::partition::{partition_to_dir, PartitionOptions, PartitionWriteMode};
+use terrio::ops::vector_schema::{export_schema_path, set_field_type, FieldSelector, OgrType};
+
+let ds = terrio::open_vector("countries.gpkg", &Default::default())?;
+let sources = vec![ConcatSource { name: "countries.gpkg".into(), layers: ds.layers.clone() }];
+let merged = concat(&sources, &ConcatOptions { mode: ConcatMode::Single, ..Default::default() })?;
+let typed = set_field_type(&merged[0], &FieldSelector::Name("POP_EST".into()), OgrType::parse("Integer64")?)?;
+let options = PartitionOptions { fields: vec!["CONTINENT".into()], ..Default::default() };
+let write = terrio::VectorWriteOptions { driver: Some(terrio::formats::VectorDriver::GPKG), ..Default::default() };
+partition_to_dir(&[typed], "out", &options, &write, PartitionWriteMode::Create)?;
+println!("{}", export_schema_path("countries.gpkg", &[])?.to_json()); // OGR_SCHEMA
+# Ok::<(), terrio::Error>(())
+```
+
+`ops::concat`, `ops::partition` (`partition` plans the parts in memory, `partition_to_dir`
+writes them), `ops::vector_schema` (`set_field_type`, `export_schema`, `export_schema_path`,
+`layer_from_schema`, `create`, `parse_field_spec`, `parse_geometry_type`, `OgrSchema`) and
+`ops::make_point` are `terrio concat`, `partition`, `set-field-type`, `export-schema`,
+`create` and `make-point`; see [Vector datasets](cli.md#vector-datasets).
+
+### Pixel-wise operations
+
+```rust
+use terrio::ops::as_features::{as_features, AsFeaturesOptions, PixelGeometry};
+use terrio::ops::pixel::{nodata_to_alpha, reclassify, unscale, ReclassifyOptions};
+let packed = terrio::open_raster("packed.tif")?;
+let physical = unscale(&packed, &Default::default())?; // value * scale + offset, Float32
+let rgba = nodata_to_alpha(&terrio::open_raster("landsat.tif")?, &Default::default())?;
+let nlcd = terrio::open_raster("nlcd.tif")?;
+let groups = reclassify(&nlcd, &ReclassifyOptions { mapping: "11=1;[21,25)=2;DEFAULT=0".into(), output_type: None })?;
+let pixels = as_features(&nlcd, &AsFeaturesOptions { geometry: PixelGeometry::Polygon, ..Default::default() })?;
+# Ok::<(), terrio::Error>(())
+```
+
+`terrio::ops::pixel::Reclassifier` parses and applies GDAL's mapping syntax on its own, and
+`mapping_from_file_text` reads mapping files. See [unscale](cli.md#unscale),
+[nodata-to-alpha](cli.md#nodata-to-alpha), [reclassify](cli.md#reclassify) and
+[as-features](cli.md#as-features).
+
+## File management
+
+```rust,no_run
+use terrio::vsi::{self, CopyOptions, ListOptions, SyncOptions, SyncStrategy};
+
+for e in vsi::list("s3://bucket/prefix", &ListOptions { recursive: true, ..Default::default() })? {
+    println!("{} {:?} {:?}", e.name, e.kind, e.size);
+}
+vsi::copy("data", "s3://bucket/prefix", &CopyOptions { recursive: true, ..Default::default() })?;
+let report = vsi::sync("data/", "s3://bucket/prefix", &SyncOptions { recursive: true, strategy: SyncStrategy::ETag })?;
+println!("{} copied, {} up to date", report.copied, report.unchanged);
+vsi::rename("s3://bucket/old", "s3://bucket/new")?;
+vsi::delete("s3://bucket/prefix", true)?;
+# Ok::<(), terrio::Error>(())
+```
+
+`terrio::vsi` lists, copies, deletes, moves and synchronizes files across local, `/vsimem/`,
+S3, Google Cloud Storage, Azure, HTTP and zip/tar locations (see [vsi](cli.md#vsi)).
+`vsi::RemoteLister` plans a remote listing without doing I/O, for hosts that send the requests
+themselves (WebAssembly's `fetch`).
 
 ## Coordinate systems
 
@@ -301,12 +489,13 @@ the operations and the streams. The other drivers are features:
 | `lerc` | on | LERC-compressed GeoTIFFs, read and written. |
 | `lzma` | on | LZMA-compressed GeoTIFFs. |
 | `gdal` | off | The optional GDAL backend: formats terrio has no driver for, through GDAL (needs GDAL installed). See [the GDAL backend](gdal.md#the-optional-gdal-backend). |
+| `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`. See [ndarray](#ndarray). |
 
 The drivers stay in the API whatever the features (`formats::RasterDriver`,
 `formats::VectorDriver`): those a build leaves out are listed as neither read nor written, and
 opening or writing their files fails with "built without the `zarr` feature". Modules and types
 that belong to one feature (`terrio::arrow`, `terrio::pointcloud`, `terrio::http`,
-`terrio::s3`, `tiles::TileArchive`) exist only with it.
+`terrio::s3`, `tiles::TileArchive`, `terrio::ndarray`, `RasterArrayExt`) exist only with it.
 
 The `geotiff` build still pulls the JPEG XL decoder and encoder (`jxl-oxide`, `zune-jpegxl`):
 `wbraster`, terrio's raster data model, depends on them through its GeoTIFF reader.

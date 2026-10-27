@@ -2,13 +2,20 @@
 
 import os
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Literal, Protocol, TypeAlias, final, overload
+from typing import Any, Literal, Protocol, TypeAlias, TypedDict, final, overload
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
 
-# PyO3 sets `__all__` to the names added to the module, in registration order.
+# PyO3 sets `__all__` to the names added to the module.
 __all__ = [
+    "create_raster",
+    "edit_raster",
+    "move_raster",
+    "add_overviews",
+    "delete_overviews",
+    "refresh_overviews",
+    "update_raster",
     "__version__",
     "Raster",
     "GeoTiffWriter",
@@ -46,8 +53,25 @@ __all__ = [
     "calc",
     "proximity",
     "viewshed",
+    "vector_grid",
+    "lineref_create",
+    "lineref_position",
+    "lineref_coordinates",
+    "lineref_subline",
     "sieve",
     "fill_nodata",
+    "compare",
+    "pixel_info",
+    "xyz",
+    "neighbors",
+    "nearblack",
+    "clean_collar",
+    "enhance",
+    "enhance_luts",
+    "unscale",
+    "nodata_to_alpha",
+    "reclassify",
+    "as_features",
     "PointCloud",
     "PointCloudFile",
     "PointChunks",
@@ -67,6 +91,31 @@ __all__ = [
     "RpcTransformer",
     "FeatureStream",
     "open_stream",
+    "simplify",
+    "segmentize",
+    "convex_hull",
+    "concave_hull",
+    "swap_xy",
+    "set_geom_type",
+    "combine",
+    "sort",
+    "vsi_list",
+    "vsi_stat",
+    "vsi_read",
+    "vsi_write",
+    "vsi_copy",
+    "vsi_delete",
+    "vsi_move",
+    "vsi_sync",
+    "concat",
+    "partition",
+    "set_field_type",
+    "make_point",
+    "export_schema",
+    "create_vector",
+    "rename_layer",
+    "edit_vector",
+    "update_vector",
     "cli_main",
 ]
 
@@ -534,6 +583,18 @@ class PointCloud:
         nodata: float = ...,  # -9999.0
         ot: str | None = None,
     ) -> Raster: ...
+    def hexbin(
+        self,
+        edge_length: float | None = None,
+        *,
+        sample_size: int = 5000,
+        threshold: int = 15,
+        smooth: bool = True,
+        preserve_topology: bool = True,
+        hole_cull_area_tolerance: float | None = None,
+        origin: tuple[float, float] | None = None,
+        precision: int = 8,
+    ) -> dict[str, Any]: ...
     def to_layer(
         self, dimensions: Sequence[str] | None = None, name: str | None = None
     ) -> Layer: ...
@@ -707,6 +768,8 @@ def convert(
     nln: str | None = None,
     nlt: str | None = None,
     explodecollections: bool = False,
+    simplify: float | None = None,
+    segmentize: float | None = None,
     s_srs: str | None = None,
     a_srs: str | None = None,
     append: bool = False,
@@ -912,6 +975,83 @@ def calc(
     bigtiff: bool = False,
     **inputs: _RasterSource | int,
 ) -> Raster: ...
+def vector_grid(
+    src: _VectorSource,
+    dst: str | None = None,
+    *,
+    algorithm: str = "invdist",
+    zfield: str | None = None,
+    zoffset: float = 0.0,
+    zmultiply: float = 1.0,
+    layers: Sequence[str] | None = None,
+    sql: str | None = None,
+    where: str | None = None,
+    bbox: _Bounds | None = None,
+    extent: _Bounds | None = None,
+    size: tuple[int, int] | None = None,
+    resolution: tuple[float, float] | None = None,
+    ot: str | None = None,
+    crs: str | None = None,
+    power: float | None = None,
+    smoothing: float | None = None,
+    radius: float | None = None,
+    radius1: float | None = None,
+    radius2: float | None = None,
+    angle: float | None = None,
+    min_points: int | None = None,
+    max_points: int | None = None,
+    min_points_per_quadrant: int | None = None,
+    max_points_per_quadrant: int | None = None,
+    nodata: float | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+) -> Raster:
+    """Grid scattered vector points into a raster, as gdal_grid."""
+    ...
+
+def lineref_create(
+    lines: _VectorSource,
+    points: _VectorSource,
+    position_field: str,
+    step: float,
+    dst: str | None = None,
+    *,
+    lines_layer: str | None = None,
+    points_layer: str | None = None,
+    line_field: str | None = None,
+    point_field: str | None = None,
+    id_field: str = "uniq_uid",
+    layer_name: str | None = None,
+    format: str | None = None,
+) -> Layer:
+    """Cut a route into linear reference parts, as ogrlineref -create."""
+    ...
+
+def lineref_position(
+    parts: _VectorSource, x: float, y: float, *, layer: str | None = None
+) -> float:
+    """The position of a point on linear reference parts, as ogrlineref -get_pos."""
+    ...
+
+def lineref_coordinates(
+    parts: _VectorSource, position: float, *, layer: str | None = None
+) -> list[tuple[float, float, float]]:
+    """The coordinates of a position on linear reference parts, as ogrlineref -get_coord."""
+    ...
+
+def lineref_subline(
+    parts: _VectorSource,
+    begin: float,
+    end: float,
+    dst: str | None = None,
+    *,
+    layer: str | None = None,
+    layer_name: str | None = None,
+    format: str | None = None,
+) -> Layer:
+    """The route between two positions, as ogrlineref -get_subline."""
+    ...
+
 def viewshed(
     src: str | Raster,
     ox: float,
@@ -931,6 +1071,59 @@ def viewshed(
     bigtiff: bool = False,
 ) -> Raster:
     """Single-observer visibility or minimum visible height on a projected DEM."""
+    ...
+
+def compare(
+    reference: _RasterSource,
+    input: _RasterSource,
+    *,
+    skip_all_optional: bool = False,
+    skip_binary: bool = False,
+    skip_crs: bool = False,
+    skip_geotransform: bool = False,
+    skip_overview: bool = False,
+    skip_metadata: bool = False,
+    skip_rpc: bool = False,
+    skip_geolocation: bool = False,
+    skip_subdataset: bool = False,
+) -> dict[str, Any]:
+    """Compare two rasters as ``gdal raster compare``: report, count and pixel statistics."""
+    ...
+
+def pixel_info(
+    src: _RasterSource,
+    positions: Sequence[tuple[float, float] | tuple[float, float, str]] | None = None,
+    *,
+    position_crs: str | None = None,
+    position_dataset: str | Layer | VectorDataset | _GeoJSON | None = None,
+    layer: str | None = None,
+    include_fields: Sequence[str] | None = None,
+    bands: Sequence[int] | None = None,
+    overview: int | None = None,
+    resampling: Literal["nearest", "bilinear", "cubic", "cubicspline"] = "nearest",
+    promote_pixel_value_to_z: bool = False,
+    format: Literal["geojson", "json", "csv", "text", "value"] = "geojson",
+    field_sep: str = "\n",
+    dst: str | None = None,
+    output_format: str | None = None,
+) -> Any:
+    """Pixel values at positions, as ``gdal raster pixel-info`` and ``gdallocationinfo``."""
+    ...
+
+def xyz(
+    src: _RasterSource,
+    dst: str | os.PathLike[str] | None = None,
+    *,
+    bands: Sequence[int] | None = None,
+    all_bands: bool = False,
+    skip: int | tuple[int, int] | None = None,
+    srcwin: _Window | None = None,
+    skip_nodata: bool = False,
+    src_nodata: float | Sequence[float] | None = None,
+    dst_nodata: float | Sequence[float] | None = None,
+    delimiter: str = " ",
+) -> int | str:
+    """Raster pixels as XYZ text, as ``gdal2xyz.py``: lines written to ``dst``, or the text."""
     ...
 
 def proximity(
@@ -977,6 +1170,125 @@ def sieve(
     tile_size: int | None = None,
     bigtiff: bool = False,
 ) -> Raster: ...
+def unscale(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    ot: str | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Applies band scales and offsets (GDAL's ``gdal raster unscale``)."""
+    ...
+
+def nodata_to_alpha(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    nodata: float | Sequence[float] | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Replaces nodata values with an alpha band (GDAL's ``gdal raster nodata-to-alpha``)."""
+    ...
+
+def reclassify(
+    src: _RasterSource,
+    mapping: str,
+    dst: str | None = None,
+    *,
+    ot: str | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Maps values or ranges to new values (GDAL's ``gdal raster reclassify``)."""
+    ...
+
+def as_features(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    bands: Sequence[int] | None = None,
+    geometry_type: Literal["none", "point", "polygon"] = "none",
+    skip_nodata: bool = False,
+    include_xy: bool = False,
+    include_row_col: bool = False,
+    layer_name: str = "pixels",
+    format: str | None = None,
+    append: bool = False,
+    overwrite: bool = False,
+) -> Layer:
+    """One vector feature per pixel (GDAL's ``gdal raster as-features``)."""
+    ...
+
+def neighbors(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    kernel: str | Sequence[str],
+    method: str | Sequence[str] | None = None,
+    size: int | None = None,
+    band: int | None = None,
+    ot: str = "Float64",
+    nodata: float | str | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster: ...
+def nearblack(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    colors: str | Sequence[int] | Sequence[str | Sequence[int]] | None = None,
+    white: bool = False,
+    color_threshold: int = 15,
+    pixel_distance: int = 2,
+    add_alpha: bool = False,
+    add_mask: bool = False,
+    algorithm: str = "twopasses",
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster: ...
+def clean_collar(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    colors: str | Sequence[int] | Sequence[str | Sequence[int]] | None = None,
+    white: bool = False,
+    color_threshold: int = 15,
+    pixel_distance: int = 2,
+    add_alpha: bool = False,
+    add_mask: bool = False,
+    algorithm: str = "floodfill",
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster: ...
+def enhance(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    equalize: bool = False,
+    config: str | None = None,
+    src_scale: tuple[float, float] | None = None,
+    lut_bins: int = 256,
+    ot: str = "Byte",
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster: ...
+def enhance_luts(src: _RasterSource, *, config: str | None = None, lut_bins: int = 256) -> str: ...
 
 # Point clouds.
 
@@ -1169,3 +1481,327 @@ def pansharpen(
 def sql(src: Any, query: str, *, layers: list[str] | None = None) -> Layer:
     """Run the documented OGR SQL subset; DISTINCT and summaries discard geometry."""
     ...
+
+def simplify(src: Any, tolerance: float, *, layer: str | None = None) -> Layer:
+    """Topology-preserving simplification (GEOS TopologyPreservingSimplifier); Z kept, M dropped."""
+    ...
+
+def segmentize(src: Any, max_length: float, *, layer: str | None = None) -> Layer:
+    """Add vertices so that no segment is longer than ``max_length`` (OGR segmentize)."""
+    ...
+
+def convex_hull(src: Any, *, layer: str | None = None) -> Layer:
+    """The convex hull of each geometry."""
+    ...
+
+def concave_hull(
+    src: Any,
+    ratio: float,
+    *,
+    allow_holes: bool = False,
+    tight: bool = False,
+    layer: str | None = None,
+) -> Layer:
+    """The concave hull of each geometry, of its polygons for polygonal input."""
+    ...
+
+def swap_xy(src: Any, *, layer: str | None = None) -> Layer:
+    """Swap the X and Y coordinates of every geometry."""
+    ...
+
+def set_geom_type(
+    src: Any,
+    *,
+    geometry_type: str | None = None,
+    multi: bool = False,
+    single: bool = False,
+    linear: bool = False,
+    dim: str | None = None,
+    layer_only: bool = False,
+    feature_only: bool = False,
+    skip: bool = False,
+    layer: str | None = None,
+) -> Layer:
+    """Change geometry types and dimensions, as gdal vector set-geom-type."""
+    ...
+
+def combine(
+    src: Any,
+    *,
+    group_by: Sequence[str] | None = None,
+    keep_nested: bool = False,
+    add_extra_fields: str = "no",
+    layer: str | None = None,
+) -> Layer:
+    """Combine geometries into collections, one feature per group of field values."""
+    ...
+
+def sort(src: Any, *, method: str = "hilbert", layer: str | None = None) -> Layer:
+    """Sort features spatially (``"hilbert"`` or ``"strtree"``); null geometries last."""
+    ...
+
+class _VsiEntry(TypedDict):
+    name: str
+    type: Literal["file", "directory"]
+    size: int | None
+    modified: int | None
+    last_modification_date: str | None
+    permissions: str | None
+    etag: str | None
+
+class _VsiReport(TypedDict):
+    copied: int
+    bytes: int
+    unchanged: int
+    deleted: int
+    errors: list[tuple[str, str]]
+
+def vsi_list(
+    path: str,
+    *,
+    recursive: bool = False,
+    depth: int | None = None,
+    absolute: bool = False,
+    long: bool = False,
+) -> list[_VsiEntry]:
+    """List a directory (local, /vsimem/, cloud, HTTP index, zip or tar), like `gdal vsi list`."""
+    ...
+
+def vsi_stat(path: str) -> _VsiEntry | None:
+    """Describe one location, or None when nothing is there."""
+    ...
+
+def vsi_copy(
+    src: str, dst: str, *, recursive: bool = False, skip_errors: bool = False
+) -> _VsiReport:
+    """Copy a file or directory between locations, like `gdal vsi copy`."""
+    ...
+
+def vsi_delete(path: str, *, recursive: bool = False) -> _VsiReport:
+    """Delete a file or directory, refusing dangerous targets, like `gdal vsi delete`."""
+    ...
+
+def vsi_move(src: str, dst: str) -> _VsiReport:
+    """Move or rename a file or directory, like `gdal vsi move`."""
+    ...
+
+def vsi_sync(
+    src: str, dst: str, *, recursive: bool = False, strategy: str = "timestamp"
+) -> _VsiReport:
+    """Copy the files missing or out of date in the target, like `gdal vsi sync`."""
+    ...
+
+def vsi_read(path: str) -> bytes:
+    """Read a whole file of any location."""
+    ...
+
+def vsi_write(path: str, data: bytes) -> None:
+    """Write a file (local, /vsimem/, S3 or Azure), replacing it."""
+    ...
+
+def concat(
+    srcs: Sequence[Any],
+    dst: str | None = None,
+    *,
+    layers: list[str] | None = None,
+    mode: Literal["merge-per-layer-name", "stack", "single"] = "merge-per-layer-name",
+    output_layer: str | None = None,
+    source_layer_field_name: str | None = None,
+    source_layer_field_content: str | None = None,
+    field_strategy: Literal["union", "intersection"] = "union",
+    src_crs: str | None = None,
+    dst_crs: str | None = None,
+    format: str | None = None,
+) -> VectorDataset:
+    """Concatenate vector datasets (gdal vector concat, ogrmerge.py)."""
+    ...
+
+def partition(
+    src: Any,
+    dst: str,
+    fields: list[str] | None = None,
+    *,
+    layers: list[str] | None = None,
+    scheme: Literal["hive", "flat"] = "hive",
+    pattern: str | None = None,
+    feature_limit: int | None = None,
+    max_file_size: int | None = None,
+    omit_partitioned_fields: bool = False,
+    format: str | None = None,
+    overwrite: bool = False,
+    append: bool = False,
+) -> list[str]:
+    """Partition a vector dataset into files by field values (gdal vector partition)."""
+    ...
+
+def set_field_type(
+    src: Any,
+    field_type: str,
+    *,
+    field_name: str | None = None,
+    src_field_type: str | None = None,
+    layers: list[str] | None = None,
+    active_layer: str | None = None,
+) -> VectorDataset:
+    """Change field types with GDAL's value conversions (gdal vector set-field-type)."""
+    ...
+
+def make_point(
+    src: Any,
+    x: str,
+    y: str,
+    *,
+    z: str | None = None,
+    m: str | None = None,
+    crs: str | None = None,
+    layer: str | None = None,
+) -> Layer:
+    """Point geometries from coordinate fields (gdal vector make-point)."""
+    ...
+
+def export_schema(src: Any, *, layers: list[str] | None = None) -> dict[str, Any]:
+    """The OGR_SCHEMA document of a vector dataset (gdal vector export-schema)."""
+    ...
+
+def create_vector(
+    dst: str,
+    *,
+    schema: Mapping[str, Any] | str | os.PathLike[str] | None = None,
+    like: Any = None,
+    layers: list[str] | None = None,
+    output_layer: str | None = None,
+    geometry_type: str | None = None,
+    crs: str | None = None,
+    fid: str | None = None,
+    fields: list[str] | None = None,
+    format: str | None = None,
+    update: bool = False,
+    overwrite: bool = False,
+) -> None:
+    """Create a vector dataset of empty layers (gdal vector create)."""
+    ...
+
+def rename_layer(
+    src: Any,
+    dst: str | None = None,
+    *,
+    in_place: bool = False,
+    input_layer: str | None = None,
+    output_layer: str | None = None,
+    ascii: bool = False,
+    lower_case: bool = False,
+    filename_compatible: bool = False,
+    reserved_characters: str | None = None,
+    replacement_character: str | None = None,
+    max_length: int | None = None,
+    format: str | None = None,
+) -> VectorDataset: ...
+def edit_vector(
+    src: Any,
+    dst: str | None = None,
+    *,
+    in_place: bool = False,
+    active_layer: str | None = None,
+    crs: str | None = None,
+    geometry_type: str | None = None,
+    metadata: list[str] | None = None,
+    unset_metadata: list[str] | None = None,
+    layer_metadata: list[str] | None = None,
+    unset_layer_metadata: list[str] | None = None,
+    unset_fid: bool = False,
+    format: str | None = None,
+) -> VectorDataset: ...
+def update_vector(
+    src: Any,
+    dst: Any,
+    *,
+    input_layer: str | None = None,
+    output_layer: str | None = None,
+    key: list[str] | None = None,
+    mode: str = "merge",
+) -> VectorDataset: ...
+def create_raster(
+    dst: str | None = None,
+    *,
+    like: str | os.PathLike[str] | Raster | None = None,
+    size: tuple[int, int] | None = None,
+    band_count: int | None = None,
+    ot: str | None = None,
+    crs: str | None = None,
+    bbox: Sequence[float] | None = None,
+    nodata: float | None = None,
+    unset_nodata: bool = False,
+    burn: Sequence[float] | None = None,
+    metadata: Mapping[str, str] | None = None,
+    copy_metadata: bool = False,
+    copy_overviews: bool = False,
+    overwrite: bool = False,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster: ...
+def add_overviews(
+    path: str,
+    levels: Sequence[int] | None = None,
+    *,
+    min_size: int = 256,
+    resampling: str = "nearest",
+    external: bool = False,
+    compression: str | None = None,
+    ignore_cog_layout_break: bool = False,
+) -> list[tuple[int, int]]: ...
+def delete_overviews(
+    path: str,
+    *,
+    external: bool = False,
+    ignore_cog_layout_break: bool = False,
+) -> None: ...
+def refresh_overviews(
+    path: str,
+    levels: Sequence[int] | None = None,
+    *,
+    resampling: str | None = None,
+    bbox: Sequence[Sequence[float]] | None = None,
+    like: Sequence[str] | None = None,
+    external: bool = False,
+    ignore_cog_layout_break: bool = False,
+) -> list[tuple[int, int]]: ...
+def update_raster(
+    src: str | os.PathLike[str] | Raster,
+    dst: str,
+    *,
+    resampling: str = "nearest",
+    geometry: str | None = None,
+    geometry_crs: str | None = None,
+    no_update_overviews: bool = False,
+    error_threshold: float | None = None,
+    ignore_cog_layout_break: bool = False,
+) -> tuple[int, int, int, int] | None: ...
+def edit_raster(
+    path: str,
+    *,
+    crs: str | None = None,
+    unset_crs: bool = False,
+    geotransform: Sequence[float] | None = None,
+    bbox: Sequence[float] | None = None,
+    gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
+    nodata: float | None = None,
+    unset_nodata: bool = False,
+    metadata: Mapping[str, str] | None = None,
+    unset_metadata: Sequence[str] | None = None,
+    unset_all_metadata: bool = False,
+    stats: bool = False,
+    approx_stats: bool = False,
+    unset_stats: bool = False,
+    histogram: bool = False,
+    ignore_cog_layout_break: bool = False,
+) -> None: ...
+def move_raster(
+    path: str,
+    t_srs: str,
+    *,
+    s_srs: str | None = None,
+    error_threshold: float | None = None,
+    ignore_cog_layout_break: bool = False,
+) -> dict[str, Any]: ...

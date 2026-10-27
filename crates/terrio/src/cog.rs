@@ -155,6 +155,10 @@ enum Inner {
 /// A raster read by window, at full resolution or from an overview, by a driver other than the
 /// GeoTIFF one (STAC mosaics, Zarr pyramids).
 pub(crate) trait WindowSource: Send + Sync {
+    /// The declared type of one band, for sources with heterogeneous band types.
+    fn band_data_type(&self, _band: usize) -> Option<DataType> {
+        None
+    }
     /// A second handle to an already shared source.
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         None
@@ -219,6 +223,9 @@ impl SharedRaster {
     }
 }
 impl WindowSource for SharedRaster {
+    fn band_data_type(&self, band: usize) -> Option<DataType> {
+        self.lock().ok().map(|reader| reader.band_data_type(band))
+    }
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         Some(Box::new(self.clone()))
     }
@@ -444,7 +451,16 @@ impl LazyRaster {
 
     /// [`LazyRaster::from_tiff_bytes`] with other decoding limits than the defaults.
     pub fn from_tiff_bytes_with_limits(bytes: Vec<u8>, limits: TiffReadLimits) -> Result<Option<Self>> {
-        let mut source = Source::Memory(std::io::Cursor::new(SharedBytes(std::sync::Arc::new(bytes))));
+        Self::from_tiff_shared_bytes_with_limits(std::sync::Arc::new(bytes), limits)
+    }
+
+    /// Opens GeoTIFF bytes shared by immutable readers without copying the file buffer.
+    pub fn from_tiff_shared_bytes(bytes: std::sync::Arc<Vec<u8>>) -> Result<Option<Self>> {
+        Self::from_tiff_shared_bytes_with_limits(bytes, TiffReadLimits::default())
+    }
+
+    fn from_tiff_shared_bytes_with_limits(bytes: std::sync::Arc<Vec<u8>>, limits: TiffReadLimits) -> Result<Option<Self>> {
+        let mut source = Source::Memory(std::io::Cursor::new(SharedBytes(bytes)));
         if !is_tiff(&mut source) {
             return Ok(None);
         }
@@ -562,6 +578,14 @@ impl LazyRaster {
         }
     }
 
+    /// The declared band type, falling back to the shared raster type.
+    pub(crate) fn band_data_type(&self, band: usize) -> DataType {
+        match &self.inner {
+            Inner::Source(_, source) => source.band_data_type(band).unwrap_or_else(|| self.data_type()),
+            _ => self.data_type(),
+        }
+    }
+
     /// The bits of a sample as a TIFF stores them (its `BitsPerSample`); `None` for other
     /// sources. Samples may be read as a wider [`LazyRaster::data_type`], as GDAL reads them:
     /// Float16 (16 bits, read as Float32; GDAL's Float16) and unsigned samples of 1 to 7 or 9 to
@@ -586,6 +610,17 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.geo_transform,
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.geo_transform(),
+        }
+    }
+
+    /// Whether the file has a geotransform of its own: false for an unreferenced or GCP-only
+    /// GeoTIFF, whose [`geo_transform`](Self::geo_transform) is the unit-pixel fallback. An
+    /// in-memory dataset always carries a pixel grid, so only a GCP-only one without an affine
+    /// reports false.
+    pub fn has_geo_transform(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(t) => t.tags.corner_geo_transform().is_some(),
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.gcps.is_empty() || ds.affine.is_some(),
         }
     }
 
