@@ -44,6 +44,15 @@
   traditional GIS axis strategy; ordinary north/east Earth axes still use
   longitude, latitude order.
 
+### Warp
+
+- With bilinear, cubic, cubic spline and Lanczos, an output pixel whose source
+  pixel under the sample point is nodata (or cut out) is now left unwritten
+  (at the output's nodata value, when it has one) for a single-band source too,
+  as GDAL does: it took a value renormalised over the valid neighbours, which
+  moved the edge of the data about a pixel into nodata areas. Several bands
+  already behaved so, with unified nodata.
+
 ### Shapefile
 
 - In polygon records of several parts, rings that touch themselves at a vertex
