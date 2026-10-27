@@ -12,7 +12,7 @@ pub struct Args {
     wkt: bool,
     /// Print only the PROJJSON definition, so that the output is a PROJJSON file (refused for a CRS
     /// it would describe wrongly).
-    #[arg(long, conflicts_with_all = ["to", "wkt"])]
+    #[arg(long, conflicts_with_all = ["to", "wkt", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
     projjson: bool,
     /// Transform coordinates into this CRS. Reads `x y` pairs from the arguments, or lines of
     /// `x y`, `x y z` or `x y z t` (t: a decimal year) from standard input when none are given,

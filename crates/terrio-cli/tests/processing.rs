@@ -170,6 +170,9 @@ fn crs_prints_projjson() {
     // Not with a transformation, which it would not apply to.
     let output = run(&["crs", "EPSG:32632", "--projjson", "--to", "EPSG:4326"], dir.path());
     assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+    // Nor with points, which it would drop.
+    let output = run(&["crs", "EPSG:4326", "--projjson", "10", "20"], dir.path());
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
     // Refused rather than written wrongly.
     let output = run(&["crs", "+proj=longlat +lon_0=10 +datum=WGS84", "--projjson"], dir.path());
     assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("+lon_0=10"));

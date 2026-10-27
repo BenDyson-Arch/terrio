@@ -214,7 +214,8 @@ def main():
         r = ours[code]
         if 'error' in r:
             body['refused'] += 1
-            if not r['error'].startswith(ALLOWED_REFUSALS, len('coordinate reference system: ')):
+            # The message after the error kind's prefix (`coordinate reference system: `).
+            if not r['error'].split(': ', 1)[-1].startswith(ALLOWED_REFUSALS):
                 body['bad'].append(f"{code}: {r['error']}")
             continue
         body['written'] += 1
