@@ -502,7 +502,8 @@ PROJ's output:
 - polar CSs have east and north axes rather than axes along meridians;
 - static datums have no `anchor_epoch`.
 
-Refused rather than written wrongly: dynamic CRSs (their frame epochs), projections without an
+Refused rather than written wrongly: dynamic CRSs (their frame epochs; by EPSG code or a WKT 2
+`DYNAMIC` node), projections without an
 EPSG method (`+proj=robin`), engineering CRSs, projections on an auxiliary sphere of an
 ellipsoid (`+R_C`, `+R_A`; 19 IAU_2015 CRSs), planetocentric latitudes with heights, a
 `+towgs84` of other than 3 or 7 values, a prime meridian it cannot read (`+pm=foo`), non-finite

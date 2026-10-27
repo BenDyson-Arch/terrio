@@ -128,9 +128,10 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     let entry = s.epsg.and_then(epsg::get);
     let base = base_node(&root).ok_or_else(|| unsupported("a CRS without geodetic datum"))?;
     // The WGS 84 and ETRS89 ensembles are static in PROJJSON. A CRS without code on a dynamic
-    // base CRS (by its code) would lose its frame reference epoch too.
+    // base CRS (by its code), or a WKT 2 with a DYNAMIC node, would lose its frame epoch too.
     let dynamic = |e: &epsg::Entry| e.dynamic && !matches!(e.datum, 6326 | 6258);
-    if entry.is_some_and(dynamic) || base.epsg().and_then(epsg::get).is_some_and(dynamic) {
+    let dynamic_node = root.child("DYNAMIC").is_some() || base.child("DYNAMIC").is_some();
+    if dynamic_node || entry.is_some_and(dynamic) || base.epsg().and_then(epsg::get).is_some_and(dynamic) {
         return Err(unsupported("a dynamic CRS (its frame reference epoch)"));
     }
     let proj = match (entry, s.proj4.as_deref()) {

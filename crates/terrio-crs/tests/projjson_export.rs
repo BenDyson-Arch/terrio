@@ -148,17 +148,31 @@ fn what_would_be_written_wrongly_is_refused() {
     assert!(SpatialRef::parse("+proj=merc +R_C +R=696000000").unwrap().to_projjson().is_ok());
     assert!(refusal("+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6").contains("+towgs84 of 6 values"));
     // A prime meridian it cannot read is not written as Greenwich.
-    if let Ok(s) = SpatialRef::parse("+proj=longlat +datum=WGS84 +pm=foo") {
-        assert!(s.to_projjson().unwrap_err().to_string().contains("+pm=foo"));
-    }
+    assert!(refusal("+proj=longlat +datum=WGS84 +pm=foo").contains("+pm=foo"));
     // JSON has no NaN: a non-finite parameter is refused rather than written as null.
-    if let Ok(s) = SpatialRef::parse("+proj=tmerc +k_0=nan +ellps=WGS84") {
-        assert!(s.to_projjson().unwrap_err().to_string().contains("non-finite"));
-    }
+    assert!(refusal("+proj=tmerc +k_0=nan +ellps=WGS84").contains("non-finite"));
+    // A WKT 2 dynamic CRS without code (its frame epoch would be lost).
+    let wkt = r#"GEOGCRS["ITRF2014",DYNAMIC[FRAMEEPOCH[2010]],DATUM["International Terrestrial Reference Frame 2014",ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]"#;
+    assert!(SpatialRef::from_wkt(wkt).to_projjson().unwrap_err().to_string().contains("dynamic"));
     // Krovak's co-latitude of the cone axis is fixed: another +alpha (which PROJ reads) is refused;
     // its +lat_1 and +lat_ts, which PROJ ignores, are not.
     assert!(refusal("+proj=krovak +alpha=31 +ellps=bessel").contains("+alpha=31"));
     assert!(SpatialRef::parse("+proj=krovak +alpha=30.28813972222222 +lat_ts=70 +ellps=bessel").unwrap().to_projjson().is_ok());
+}
+
+#[test]
+fn degrees_are_written_as_given() {
+    // Through radians and back, as PROJ strings are read: the usual values stay exact.
+    for (d, key, code) in [
+        ("+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +datum=WGS84", "Latitude of standard parallel", 70.0),
+        ("+proj=tmerc +lat_0=49.5 +lon_0=-2.1 +ellps=WGS84", "Latitude of natural origin", 49.5),
+        ("+proj=tmerc +lat_0=49.5 +lon_0=-2.1 +ellps=WGS84", "Longitude of natural origin", -2.1),
+        ("+proj=lcc +lat_0=46.5 +lat_1=49 +lat_2=44 +lon_0=3 +ellps=GRS80", "Latitude of 2nd standard parallel", 44.0),
+    ] {
+        let v = export(d);
+        let p = v["conversion"]["parameters"].as_array().unwrap().iter().find(|p| p["name"] == key).unwrap();
+        assert_eq!(p["value"].as_f64(), Some(code), "{d}");
+    }
 }
 
 #[test]
