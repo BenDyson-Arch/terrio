@@ -1066,8 +1066,8 @@ def suite_projjson_export(ctx):
                   "`SpatialRef::to_projjson` of 52 CRSs compared with PROJ's PROJJSON by meaning and read by "
                   "GDAL, which transforms points as from the original (vertical CRSs paired with WGS 84; "
                   "no grids); every IAU_2015 CRS read by GDAL with its code's coordinates, per body; and "
-                  "5 misdescriptions refused. Tolerance: 1e-8 degrees, 1 mm. Not compared: no point both "
-                  "CRSs transform.")
+                  "7 misdescriptions refused for their reasons. Tolerance: 1e-8 degrees, 1 mm. Not compared: "
+                  "no point the original CRS transforms.")
     if missing_modules("osgeo"):
         suite.skipped = "needs GDAL Python bindings"
         return suite

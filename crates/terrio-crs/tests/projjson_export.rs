@@ -1,6 +1,6 @@
 //! `SpatialRef::to_projjson`: one CRS of each kind against what PROJ 9.9 writes for it, read back
 //! by `SpatialRef::from_projjson` where its subset allows, and the refusals. The full comparison
-//! with live PROJ and GDAL (45 CRSs by meaning and coordinates, and every IAU_2015 CRS) is the
+//! with live PROJ and GDAL (52 CRSs by meaning and coordinates, and every IAU_2015 CRS) is the
 //! `projjson-export` suite of `scripts/conformance.py`.
 
 use serde_json::{Value, json};
@@ -116,6 +116,18 @@ fn datum_shifts_are_bound_as_proj_binds_them() {
     let v: Value = serde_json::from_str(&SpatialRef::from_wkt(wkt).to_projjson().unwrap()).unwrap();
     assert_eq!((&v["type"], &v["source_crs"]["id"]["code"]), (&json!("BoundCRS"), &json!(31467)));
     assert_eq!(v["transformation"]["name"], "Transformation from DHDN to WGS84");
+    // EPSG CRSs whose GDAL WKT carries a TOWGS84 are written from their code, unbound.
+    for code in ["EPSG:4277", "EPSG:27700", "EPSG:4230"] {
+        assert_ne!(export(code)["type"], "BoundCRS", "{code}");
+    }
+    // As PROJ 9.9 binds a geocentric CRS (geocentric domain, to EPSG:4978) and a 3D one (to 4979).
+    let v = export("+proj=geocent +ellps=bessel +towgs84=1,2,3");
+    assert_eq!((v["transformation"]["method"]["id"]["code"].as_u64(), v["target_crs"]["id"]["code"].as_u64()), (Some(1031), Some(4978)));
+    assert_eq!(v["target_crs"]["coordinate_system"]["subtype"], "Cartesian");
+    let v = export("+proj=geocent +ellps=bessel +towgs84=1,2,3,4,5,6,7");
+    assert_eq!(v["transformation"]["method"]["id"]["code"], 1033);
+    let v = export("+proj=longlat +ellps=bessel +towgs84=1,2,3");
+    assert_eq!((v["transformation"]["method"]["id"]["code"].as_u64(), v["target_crs"]["id"]["code"].as_u64()), (Some(9603), Some(4326)));
 }
 
 #[test]
@@ -135,6 +147,18 @@ fn what_would_be_written_wrongly_is_refused() {
     // On a sphere, the auxiliary sphere is the sphere: written.
     assert!(SpatialRef::parse("+proj=merc +R_C +R=696000000").unwrap().to_projjson().is_ok());
     assert!(refusal("+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6").contains("+towgs84 of 6 values"));
+    // A prime meridian it cannot read is not written as Greenwich.
+    if let Ok(s) = SpatialRef::parse("+proj=longlat +datum=WGS84 +pm=foo") {
+        assert!(s.to_projjson().unwrap_err().to_string().contains("+pm=foo"));
+    }
+    // JSON has no NaN: a non-finite parameter is refused rather than written as null.
+    if let Ok(s) = SpatialRef::parse("+proj=tmerc +k_0=nan +ellps=WGS84") {
+        assert!(s.to_projjson().unwrap_err().to_string().contains("non-finite"));
+    }
+    // Krovak's co-latitude of the cone axis is fixed: another +alpha (which PROJ reads) is refused;
+    // its +lat_1 and +lat_ts, which PROJ ignores, are not.
+    assert!(refusal("+proj=krovak +alpha=31 +ellps=bessel").contains("+alpha=31"));
+    assert!(SpatialRef::parse("+proj=krovak +alpha=30.28813972222222 +lat_ts=70 +ellps=bessel").unwrap().to_projjson().is_ok());
 }
 
 #[test]

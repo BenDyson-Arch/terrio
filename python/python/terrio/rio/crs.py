@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -103,15 +104,17 @@ class CRS(Mapping[str, Any]):
         """
         self._info: dict[str, Any] = {}
         self._input = ""
+        self._from_file = False
         if isinstance(initialdata, CRS):
             self._info = dict(initialdata._info)
             self._input = initialdata._input
+            self._from_file = initialdata._from_file
             return
         params = dict(initialdata or {})
         params.update(kwargs)
         if params:
             other = CRS.from_dict(params)
-            self._info, self._input = other._info, other._input
+            self._info, self._input, self._from_file = other._info, other._input, other._from_file
 
     @classmethod
     def _from(cls, definition: str) -> CRS:
@@ -133,6 +136,7 @@ class CRS(Mapping[str, Any]):
         crs = cls()
         crs._info = dict(info)
         crs._input = definition
+        crs._from_file = os.path.isfile(definition) and bool(info.get("wkt"))
         return crs
 
     @classmethod
@@ -523,8 +527,10 @@ class CRS(Mapping[str, Any]):
         Raises:
             CRSError: If terrio would describe the CRS wrongly in PROJJSON.
         """
+        # The definition captured at construction: a file's WKT, not the file read again.
+        definition = self._info.get("wkt") if self._from_file else self._input
         try:
-            return _terrio.crs_to_projjson(self._input)
+            return _terrio.crs_to_projjson(definition)
         except Exception as err:
             raise CRSError(f"No PROJJSON for '{self._input}': {err}") from err
 
@@ -614,7 +620,7 @@ class CRS(Mapping[str, Any]):
         Returns:
             dict: The state.
         """
-        return {"info": self._info, "input": self._input}
+        return {"info": self._info, "input": self._input, "from_file": self._from_file}
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restores a pickled state.
@@ -624,6 +630,7 @@ class CRS(Mapping[str, Any]):
         """
         self._info = state["info"]
         self._input = state["input"]
+        self._from_file = state.get("from_file", False)
 
     def __copy__(self) -> CRS:
         """A copy.

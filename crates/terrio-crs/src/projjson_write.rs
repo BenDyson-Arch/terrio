@@ -126,8 +126,11 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     let root = wkt1::parse(wkt).ok_or_else(|| unsupported("an unreadable WKT"))?;
     let def = Def::new(s)?;
     let entry = s.epsg.and_then(epsg::get);
-    // The WGS 84 and ETRS89 ensembles are static in PROJJSON.
-    if entry.is_some_and(|e| e.dynamic && !matches!(e.datum, 6326 | 6258)) {
+    let base = base_node(&root).ok_or_else(|| unsupported("a CRS without geodetic datum"))?;
+    // The WGS 84 and ETRS89 ensembles are static in PROJJSON. A CRS without code on a dynamic
+    // base CRS (by its code) would lose its frame reference epoch too.
+    let dynamic = |e: &epsg::Entry| e.dynamic && !matches!(e.datum, 6326 | 6258);
+    if entry.is_some_and(dynamic) || base.epsg().and_then(epsg::get).is_some_and(dynamic) {
         return Err(unsupported("a dynamic CRS (its frame reference epoch)"));
     }
     let proj = match (entry, s.proj4.as_deref()) {
@@ -136,15 +139,17 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         (None, None) => crate::wkt_proj(wkt).ok_or_else(|| unsupported("a WKT terrio reads otherwise"))?,
     };
     let p = Params::parse(&proj);
-    let base = base_node(&root).ok_or_else(|| unsupported("a CRS without geodetic datum"))?;
     refuse_misdescribed(&root, &p, &def)?;
     let name = root.name().unwrap_or("unknown").to_string();
     let code = s.epsg.or_else(|| crate::declared_epsg(wkt));
     // A datum shift the definition gives (`+towgs84`, WKT's TOWGS84) makes a bound CRS, as PROJ
-    // reads it; a CRS made from an EPSG code is written as such (its datum shift is EPSG's).
-    let given = s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj));
+    // reads it; a CRS made from an EPSG code (its table WKT) is written as such, whatever that
+    // WKT holds: its datum shift is EPSG's.
+    let from_table = s.proj4.is_none() && entry.is_some_and(|e| s.wkt.as_deref() == Some(e.wkt.as_str()));
+    let given = if from_table { None } else { s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj)) };
     let towgs84 = match given.and_then(|g| Params::parse(&g).list("towgs84")) {
         Some(t) if !matches!(t.len(), 3 | 7) => return Err(unsupported(format!("a +towgs84 of {} values", t.len()))),
+        Some(t) if t.iter().any(|v| !v.is_finite()) => return Err(unsupported("a +towgs84 with a non-finite value")),
         t => t,
     };
     let mut written = vec!["towgs84"];
@@ -194,7 +199,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     };
     refuse_unwritten(&p, &written, entry.is_some())?;
     match towgs84 {
-        Some(t) => Ok(bound(out, &t, base.name().unwrap_or("unknown"))),
+        Some(t) => Ok(bound(out, &t, base.name().unwrap_or("unknown"), def.is_geocentric(), def.is_geographic() && def.has_height())),
         None => Ok(out),
     }
 }
@@ -284,25 +289,38 @@ fn datum(base: &Node, p: &Params, def: &Def) -> Result<Value> {
     }
     let ellipsoid = with_id(ellipsoid, e.and_then(Node::epsg));
     let mut d = json!({"type": "GeodeticReferenceFrame", "name": name, "ellipsoid": ellipsoid});
-    if let Some(pm) = prime_meridian(base, p) {
+    if let Some(pm) = prime_meridian(base, p)? {
         d["prime_meridian"] = pm;
     }
     Ok(with_id(d, code))
 }
 
-/// The prime meridian, unless Greenwich: its longitude in degrees.
-fn prime_meridian(base: &Node, p: &Params) -> Option<Value> {
+/// The prime meridian, unless Greenwich: its longitude in degrees. One the WKT or `+pm` gives
+/// but this cannot read is refused rather than written as Greenwich.
+fn prime_meridian(base: &Node, p: &Params) -> Result<Option<Value>> {
     let node = base.child("PRIMEM");
-    let longitude = match node {
+    // The PROJ string's `+pm` first: the WKT terrio writes for one it cannot read says Greenwich.
+    let longitude = match (p.str("pm"), node) {
+        (Some(v), _) => v
+            .parse::<f64>()
+            .ok()
+            .or_else(|| crate::math::prime_meridian(v))
+            .ok_or_else(|| unsupported(format!("the prime meridian +pm={v}")))?,
         // WKT 2 gives its unit; GDAL's WKT 1 writes degrees.
-        Some(n) => n.num(1)? * n.child("ANGLEUNIT").and_then(|u| u.num(1)).map_or(1.0, |f| f / DEGREE),
-        None => p.str("pm").and_then(|v| v.parse::<f64>().ok().or_else(|| crate::math::prime_meridian(v)))?,
+        (None, Some(n)) => n
+            .num(1)
+            .map(|l| l * n.child("ANGLEUNIT").and_then(|u| u.num(1)).map_or(1.0, |f| f / DEGREE))
+            .ok_or_else(|| unsupported("an unreadable PRIMEM"))?,
+        (None, None) => return Ok(None),
     };
+    if !longitude.is_finite() {
+        return Err(unsupported("a non-finite prime meridian"));
+    }
     if longitude == 0.0 {
-        return None;
+        return Ok(None);
     }
     let name = node.and_then(Node::name).map(str::to_string).or_else(|| p.str("pm").map(str::to_string)).unwrap_or_default();
-    Some(with_id(json!({"name": name, "longitude": longitude}), node.and_then(Node::epsg)))
+    Ok(Some(with_id(json!({"name": name, "longitude": longitude}), node.and_then(Node::epsg))))
 }
 
 /// The axes of a node, as `(name, direction)` in lower case.
@@ -582,8 +600,12 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
             }
         }
         "krovak" => {
-            // As terrio and PROJ compute it: their defaults, and the co-latitude of the cone axis
-            // and the pseudo standard parallel fixed (`alpha`, `lat_1` and `lat_ts` are ignored).
+            // As terrio and PROJ compute it: their defaults, and the pseudo standard parallel fixed
+            // (PROJ ignores `lat_1` and `lat_ts`). The co-latitude of the cone axis is fixed too:
+            // another `alpha` (which PROJ reads) is refused.
+            if let Some(alpha) = deg("alpha").filter(|a| (a - 30.288_139_752_777_8).abs() > 1e-6) {
+                return Err(unsupported(format!("a Krovak projection with +alpha={alpha}")));
+            }
             let values = vec![
                 (LAT_CENTRE, deg("lat_0").unwrap_or(49.5)),
                 (LON_ORIGIN, deg("lon_0").unwrap_or(24.0 + 50.0 / 60.0)),
@@ -627,6 +649,10 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
         }
         other => return Err(unsupported(format!("the projection +proj={other}"))),
     };
+    // `str::parse` reads `nan` and `inf`, which JSON cannot carry.
+    if let Some(((pname, ..), _)) = values.iter().find(|(_, v)| !v.is_finite()) {
+        return Err(unsupported(format!("a non-finite {}", pname.to_lowercase())));
+    }
     let parameters: Vec<Value> = values
         .into_iter()
         .map(|((pname, pcode, kind), value)| {
@@ -644,8 +670,10 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
     ))
 }
 
-/// A bound CRS: `source` with its transformation to WGS 84, as PROJ writes `+towgs84`.
-fn bound(source: Value, t: &[f64], geographic: &str) -> Value {
+/// A bound CRS: `source` with its transformation to WGS 84, as PROJ writes `+towgs84`: in the
+/// geocentric domain to WGS 84's geocentric CRS for a geocentric source, else in the geog2D
+/// domain to WGS 84's geographic 2D or (for a source with heights) 3D CRS.
+fn bound(source: Value, t: &[f64], geographic: &str, geocentric: bool, three_d: bool) -> Value {
     // PROJ knows "metre", "degree" and "unity" by name; other units are objects.
     let arc_second = json!({"type": "AngularUnit", "name": "arc-second", "conversion_factor": DEGREE / 3600.0});
     let ppm = json!({"type": "ScaleUnit", "name": "parts per million", "conversion_factor": 1e-6});
@@ -658,24 +686,35 @@ fn bound(source: Value, t: &[f64], geographic: &str) -> Value {
         ("Z-axis rotation", 8610, arc_second),
         ("Scale difference", 8611, ppm),
     ];
-    let (method, code) = if t.len() == 3 {
-        ("Geocentric translations (geog2D domain)", 9603)
-    } else {
-        ("Position Vector transformation (geog2D domain)", 9606)
+    let (method, code) = match (t.len() == 3, geocentric) {
+        (true, false) => ("Geocentric translations (geog2D domain)", 9603),
+        (false, false) => ("Position Vector transformation (geog2D domain)", 9606),
+        (true, true) => ("Geocentric translations (geocentric domain)", 1031),
+        (false, true) => ("Position Vector transformation (geocentric domain)", 1033),
     };
     let parameters: Vec<Value> =
         t.iter().zip(names).map(|(v, (name, code, unit))| json!({"name": name, "value": v, "unit": unit, "id": id(code)})).collect();
-    let target = json!({
-        "type": "GeographicCRS",
-        "name": "WGS 84",
-        "datum": {"type": "GeodeticReferenceFrame", "name": "World Geodetic System 1984",
-                  "ellipsoid": {"name": "WGS 84", "semi_major_axis": 6378137, "inverse_flattening": 298.257223563, "id": id(7030)},
-                  "id": id(6326)},
-        "coordinate_system": {"subtype": "ellipsoidal", "axis": [
-            {"name": "Geodetic latitude", "abbreviation": "Lat", "direction": "north", "unit": "degree"},
-            {"name": "Geodetic longitude", "abbreviation": "Lon", "direction": "east", "unit": "degree"}]},
-        "id": id(4326),
-    });
+    let datum = json!({"type": "GeodeticReferenceFrame", "name": "World Geodetic System 1984",
+                       "ellipsoid": {"name": "WGS 84", "semi_major_axis": 6378137, "inverse_flattening": 298.257223563, "id": id(7030)},
+                       "id": id(6326)});
+    let target = if geocentric {
+        let axes: Vec<Value> = ["X", "Y", "Z"]
+            .iter()
+            .map(|a| json!({"name": format!("Geocentric {a}"), "abbreviation": a, "direction": format!("geocentric{a}"), "unit": "metre"}))
+            .collect();
+        json!({"type": "GeodeticCRS", "name": "WGS 84", "datum": datum,
+               "coordinate_system": {"subtype": "Cartesian", "axis": axes}, "id": id(4978)})
+    } else {
+        let mut axes = vec![
+            json!({"name": "Geodetic latitude", "abbreviation": "Lat", "direction": "north", "unit": "degree"}),
+            json!({"name": "Geodetic longitude", "abbreviation": "Lon", "direction": "east", "unit": "degree"}),
+        ];
+        if three_d {
+            axes.push(json!({"name": "Ellipsoidal height", "abbreviation": "h", "direction": "up", "unit": "metre"}));
+        }
+        json!({"type": "GeographicCRS", "name": "WGS 84", "datum": datum,
+               "coordinate_system": {"subtype": "ellipsoidal", "axis": axes}, "id": id(if three_d { 4979 } else { 4326 })})
+    };
     json!({
         "type": "BoundCRS",
         "source_crs": source,

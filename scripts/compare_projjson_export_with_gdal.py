@@ -4,8 +4,8 @@
 52 CRSs are compared with PROJ's PROJJSON by meaning (types, identifiers, datums, ellipsoids,
 prime meridians, axes, methods and parameters by EPSG code in SI units) and read by GDAL, whose
 transformation of points (through each CRS's geographic CRS, a vertical CRS paired with WGS 84,
-no grids) must match the original's within 1e-8 degrees and 1 mm; with no point both transform,
-a case is `not compared`. Every IAU_2015 CRS is exported and read by GDAL the same way, reported
+no grids) must match the original's within 1e-8 degrees and 1 mm; with no point the original
+transforms, a case is `not compared`, and a point only the original transforms differs. Every IAU_2015 CRS is exported and read by GDAL the same way, reported
 per body; the only refusals allowed there are projections without an EPSG method and projections
 on an auxiliary sphere of an ellipsoid.
 """
@@ -49,12 +49,18 @@ DEFINITIONS = [
     'PARAMETER["scale_factor",1],PARAMETER["false_easting",3500000],PARAMETER["false_northing",0],UNIT["metre",1],'
     'AUTHORITY["EPSG","31467"]]',
 ]
-# What terrio's PROJJSON would describe wrongly, so must refuse: auxiliary spheres of an ellipsoid
-# named by a datum or by default, a +towgs84 of 6 values, parameters it does not write.
-REFUSED = [
-    '+proj=laea +R_A +lat_0=52 +lon_0=10 +datum=WGS84', '+proj=laea +R_A +lat_0=52 +lon_0=10',
-    '+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6', '+proj=cea +k_0=0.5 +ellps=WGS84', '+proj=longlat +lon_0=10 +datum=WGS84',
-]
+# What terrio's PROJJSON would describe wrongly, so must refuse, and the reason it must give:
+# auxiliary spheres of an ellipsoid named by a datum or by default, a +towgs84 of 6 values,
+# parameters it does not write, an unknown prime meridian, Krovak with another cone axis.
+REFUSED = {
+    '+proj=laea +R_A +lat_0=52 +lon_0=10 +datum=WGS84': 'a projection on an auxiliary sphere (+R_A)',
+    '+proj=laea +R_A +lat_0=52 +lon_0=10': 'a projection on an auxiliary sphere (+R_A)',
+    '+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6': 'a +towgs84 of 6 values',
+    '+proj=cea +k_0=0.5 +ellps=WGS84': 'the parameter +k_0=0.5',
+    '+proj=longlat +lon_0=10 +datum=WGS84': 'the parameter +lon_0=10',
+    '+proj=longlat +datum=WGS84 +pm=foo': 'the prime meridian +pm=foo',
+    '+proj=krovak +alpha=31 +ellps=bessel': 'a Krovak projection with +alpha=31',
+}
 ALLOWED_REFUSALS = ('no PROJJSON for the projection', 'no PROJJSON for a projection on an auxiliary sphere')
 
 
@@ -110,14 +116,18 @@ def canonical(v):
     return out
 
 
-def export(definitions):
-    """terrio's PROJJSON (or error) of each definition, through the `export_report` test."""
+def export(definitions, timeout):
+    """terrio's PROJJSON (or error) of each definition, through the `export_report` test (built
+    and run within `timeout` seconds)."""
     with tempfile.TemporaryDirectory() as tmp:
         cases, report = Path(tmp) / 'cases.txt', Path(tmp) / 'report.jsonl'
         cases.write_text('\n'.join(definitions) + '\n')
         env = dict(os.environ, TERRIO_PROJJSON_EXPORT_CASES=str(cases), TERRIO_PROJJSON_EXPORT_REPORT=str(report))
-        run = subprocess.run(['cargo', 'test', '-q', '--release', '-p', 'terrio-crs', '--test', 'projjson_export', 'export_report'],
-                             cwd=ROOT, env=env, capture_output=True, text=True)
+        try:
+            run = subprocess.run(['cargo', 'test', '-q', '--release', '-p', 'terrio-crs', '--test', 'projjson_export', 'export_report'],
+                                 cwd=ROOT, env=env, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(f'cargo test did not finish within {timeout} s (--timeout)') from error
         if run.returncode:
             raise RuntimeError(f'cargo test failed:\n{run.stdout[-2000:]}\n{run.stderr[-2000:]}')
         return {r['definition']: r for r in map(json.loads, report.read_text().splitlines())}
@@ -125,16 +135,19 @@ def export(definitions):
 
 def difference(ours, original, base, points):
     """The largest differences, in degrees of `base` and in metres of height, between transforming
-    the `points` (in `base`) that are in the CRSs' domain from `ours` and from `original`; `None`
-    when none is."""
+    the `points` (in `base`) that are in the original CRS's domain from `ours` and from `original`;
+    `None` when none is. A point the original transforms and `ours` does not differs infinitely."""
     found = None
     for p in points:
         try:
             q = osr.CoordinateTransformation(base, original).TransformPoint(*p, 0.0)
             a = osr.CoordinateTransformation(original, base).TransformPoint(*q)
-            b = osr.CoordinateTransformation(ours, base).TransformPoint(*q)
         except RuntimeError:
             continue
+        try:
+            b = osr.CoordinateTransformation(ours, base).TransformPoint(*q)
+        except RuntimeError:
+            return (math.inf, math.inf)
         d = (max(abs(a[0] - b[0]), abs(a[1] - b[1])), abs(a[2] - b[2]))
         found = d if found is None else (max(found[0], d[0]), max(found[1], d[1]))
     return found
@@ -142,7 +155,7 @@ def difference(ours, original, base, points):
 
 def status(d):
     """The status of `difference()`'s result: within 1e-8 degrees and 1 mm; `not compared` when
-    no point is in both CRSs' domains."""
+    no point is in the original CRS's domain."""
     if d is None:
         return 'not compared'
     return 'identical' if d == (0, 0) else 'within tolerance' if d[0] <= 1e-8 and d[1] <= 1e-3 else 'differs'
@@ -151,12 +164,13 @@ def status(d):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--timeout', type=float, default=7200, help='seconds for building and running the export (default 7200)')
     args = parser.parse_args()
     osr.UseExceptions()
     database = next(Path(p) / 'proj.db' for p in osr.GetPROJSearchPaths() if (Path(p) / 'proj.db').is_file())
     with sqlite3.connect(f'file:{database}?mode=ro', uri=True) as db:
         iau = [f'IAU_2015:{c}' for (c,) in db.execute("SELECT code FROM crs_view WHERE auth_name = 'IAU_2015' ORDER BY CAST(code AS INTEGER)")]
-    ours = export(DEFINITIONS + REFUSED + iau)
+    ours = export(DEFINITIONS + list(REFUSED) + iau, args.timeout)
     results = []
     for definition in DEFINITIONS:
         r = ours[definition]
@@ -183,15 +197,16 @@ def main():
             base = original.CloneGeogCS()
             base.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
             d = difference(back, original, base, [point, (10.0, 50.0)])
-            detail = 'no point both CRSs transform' if d is None else f'{d[0]:.3g} degrees, {d[1]:.3g} m' if d != (0, 0) else ''
+            detail = 'no point the original transforms' if d is None else f'{d[0]:.3g} degrees, {d[1]:.3g} m' if d != (0, 0) else ''
             results.append(dict(group='CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status=status(d), detail=detail))
         except Exception as error:
             results.append(dict(group='CRSs (PROJ by meaning, GDAL by coordinates)', name=definition, status='differs', detail=str(error)))
-    for definition in REFUSED:
+    for definition, reason in REFUSED.items():
         r = ours[definition]
-        ok = 'error' in r
+        # Refused for its reason, not for any error (a definition terrio cannot parse).
+        ok = 'error' in r and f'no PROJJSON for {reason}' in r['error']
         results.append(dict(group='Refused (would be described wrongly)', name=definition, status='identical' if ok else 'differs',
-                            detail=r['error'] if ok else 'written'))
+                            detail=r.get('error', 'written') if not ok else ''))
     bodies = defaultdict(lambda: dict(written=0, refused=0, worst=0.0, bad=[], unchecked=[]))
     points = [(10, 20), (0, 85), (0, -85), (90, 60), (-90, -60), (180, 0), (45, 45)]
     for code in iau:
@@ -213,7 +228,7 @@ def main():
     for n, b in sorted(bodies.items()):
         name = f'IAU_2015:{n * 100}..: {b["written"]} written, {b["refused"]} refused'
         state = 'differs' if b['bad'] else 'not compared' if b['unchecked'] else status((b['worst'], 0))
-        detail = '; '.join(b['bad'][:3]) or (f"no point both transform: {', '.join(b['unchecked'][:3])}" if b['unchecked'] else '')
+        detail = '; '.join(b['bad'][:3]) or (f"no point the original transforms: {', '.join(b['unchecked'][:3])}" if b['unchecked'] else '')
         results.append(dict(group='IAU_2015 (GDAL by coordinates)', name=name, status=state, detail=detail or (f'{b["worst"]:.3g} degrees' if b['worst'] else '')))
     print(json.dumps(results, indent=2) if args.json else '\n'.join(f'{r["name"]}: {r["status"]} {r["detail"]}' for r in results))
     return int(any(r['status'] == 'differs' for r in results))

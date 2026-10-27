@@ -164,8 +164,12 @@ fn crs_prints_projjson() {
     let output = run(&["crs", "EPSG:32632", "--projjson"], dir.path());
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let out = String::from_utf8(output.stdout).unwrap();
-    let v: serde_json::Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
+    // Only the PROJJSON, so that the output is a PROJJSON file.
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!((v["type"].as_str(), v["conversion"]["name"].as_str()), (Some("ProjectedCRS"), Some("UTM zone 32N")));
+    // Not with a transformation, which it would not apply to.
+    let output = run(&["crs", "EPSG:32632", "--projjson", "--to", "EPSG:4326"], dir.path());
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
     // Refused rather than written wrongly.
     let output = run(&["crs", "+proj=longlat +lon_0=10 +datum=WGS84", "--projjson"], dir.path());
     assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("+lon_0=10"));
