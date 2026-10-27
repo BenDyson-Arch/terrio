@@ -528,7 +528,9 @@ class CRS(Mapping[str, Any]):
             CRSError: If terrio would describe the CRS wrongly in PROJJSON.
         """
         # The definition captured at construction: a file's WKT, not the file read again.
-        definition = self._info.get("wkt") if self._from_file else self._input
+        definition = self._input
+        if self._from_file and isinstance(self._info.get("wkt"), str):
+            definition = self._info["wkt"]
         try:
             return _terrio.crs_to_projjson(definition)
         except Exception as err:
