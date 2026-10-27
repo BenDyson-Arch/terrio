@@ -146,6 +146,18 @@ enum Command {
     Pansharpen(cmd::pansharpen::Args),
     /// Single-observer visibility or minimum visible height (like gdal_viewshed).
     Viewshed(cmd::viewshed::Args),
+    /// Build, delete or refresh the overviews of a GeoTIFF in place or in its .ovr sidecar (like
+    /// gdaladdo and gdal raster overview add/delete/refresh).
+    #[command(visible_alias = "addo")]
+    Overviews(cmd::overviews::Args),
+    /// Edit a GeoTIFF in place: CRS, geotransform, nodata, metadata, statistics, histograms (like
+    /// gdal raster edit and gdal_edit.py), or move its georeferencing to another CRS (gdalmove.py).
+    EditRaster(cmd::edit::Args),
+    /// Create a raster filled with burn values, from scratch or like a template (like gdal raster
+    /// create and gdal_create).
+    CreateRaster(cmd::create::Args),
+    /// Write a raster into an existing GeoTIFF, reprojected to its grid (like gdal raster update).
+    UpdateRaster(cmd::update::Args),
     /// Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py).
     Sieve(cmd::sieve::Args),
     /// Fill raster holes by interpolation, as gdal_fillnodata.
@@ -287,6 +299,10 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Proximity(a) => cmd::proximity::run(a),
         Command::Pansharpen(a) => cmd::pansharpen::run(a),
         Command::Viewshed(a) => cmd::viewshed::run(a),
+        Command::Overviews(a) => cmd::overviews::run(a),
+        Command::EditRaster(a) => cmd::edit::run(a),
+        Command::CreateRaster(a) => cmd::create::run(a),
+        Command::UpdateRaster(a) => cmd::update::run(a),
         Command::Sieve(a) => cmd::sieve::run(a),
         Command::FillNodata(a) => cmd::fill_nodata::run(a),
         Command::Unscale(a) => cmd::pixel::unscale(a),

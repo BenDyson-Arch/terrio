@@ -451,7 +451,16 @@ impl LazyRaster {
 
     /// [`LazyRaster::from_tiff_bytes`] with other decoding limits than the defaults.
     pub fn from_tiff_bytes_with_limits(bytes: Vec<u8>, limits: TiffReadLimits) -> Result<Option<Self>> {
-        let mut source = Source::Memory(std::io::Cursor::new(SharedBytes(std::sync::Arc::new(bytes))));
+        Self::from_tiff_shared_bytes_with_limits(std::sync::Arc::new(bytes), limits)
+    }
+
+    /// Opens GeoTIFF bytes shared by immutable readers without copying the file buffer.
+    pub fn from_tiff_shared_bytes(bytes: std::sync::Arc<Vec<u8>>) -> Result<Option<Self>> {
+        Self::from_tiff_shared_bytes_with_limits(bytes, TiffReadLimits::default())
+    }
+
+    fn from_tiff_shared_bytes_with_limits(bytes: std::sync::Arc<Vec<u8>>, limits: TiffReadLimits) -> Result<Option<Self>> {
+        let mut source = Source::Memory(std::io::Cursor::new(SharedBytes(bytes)));
         if !is_tiff(&mut source) {
             return Ok(None);
         }
@@ -601,6 +610,17 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.geo_transform,
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.geo_transform(),
+        }
+    }
+
+    /// Whether the file has a geotransform of its own: false for an unreferenced or GCP-only
+    /// GeoTIFF, whose [`geo_transform`](Self::geo_transform) is the unit-pixel fallback. An
+    /// in-memory dataset always carries a pixel grid, so only a GCP-only one without an affine
+    /// reports false.
+    pub fn has_geo_transform(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(t) => t.tags.corner_geo_transform().is_some(),
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.gcps.is_empty() || ds.affine.is_some(),
         }
     }
 

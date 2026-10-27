@@ -1861,3 +1861,62 @@ from local filesystem inputs. HTTP and archive comparisons use the reader's
 metadata and do not add those local-file extras. Comparing a local file to its
 remote/archive copy can therefore report metadata differences; use the applicable
 metadata/RPC skip options for a pixel-focused comparison across those locations.
+
+### Raster management
+
+The vector commands `create`, `edit` and `update` retain their existing names.
+Use `create-raster`, `edit-raster` and `update-raster` for raster management:
+
+```sh
+terrio create-raster filled.tif --size 256,256 --ot Float32 --burn 7 --crs EPSG:3857 --bbox 0,0,256,256
+terrio create-raster template.tif --like dem.tif --copy-metadata --copy-overviews
+terrio edit-raster filled.tif --nodata -9999 --metadata 'SOURCE=A & B' --stats
+terrio edit-raster filled.tif --t-srs EPSG:4326 --error-threshold 0.1
+terrio overviews filled.tif 2 4 --resampling average
+terrio overviews filled.tif --refresh --bbox 0,0,128,128
+terrio update-raster replacement.tif filled.tif --resampling bilinear
+terrio overviews filled.tif --clean
+```
+
+Overview methods are nearest, average, min, max and mode. Existing unrequested
+levels are retained. `--external` manages the supplied filename's `.ovr` sidecar,
+including when that filename is a symlink. Explicit compression applies to
+requested rebuilt levels. Updates retain destination pixels outside valid source
+coverage and refresh affected overviews unless `--no-update-overviews` is set.
+Georeferencing moves change the affine transform and CRS without resampling;
+`--t-srs` conflicts with other edits, and requires `--error-threshold` to write.
+A raster without a geotransform of its own (unreferenced, or georeferenced by
+ground control points) cannot be moved. With `--like`, a template without a
+geotransform gives its GCPs, or no georeferencing, instead of a unit-pixel grid.
+
+In-place operations require writable little-endian GeoTIFFs. Updating a COG
+requires `--ignore-cog-layout-break` and can invalidate its optimized layout.
+Edits use a temporary file and rename; a failure before replacement preserves
+the original. A tag of a field type the TIFF specification does not define is
+refused rather than dropped from the rewritten file. Updating external overviews
+occurs after the base TIFF commits, so an error there can leave stale overviews.
+Update working buffers span full-width rows intersecting the update window; memory
+can be large for wide rasters.
+
+Raster update requires equal source/destination band counts and treats alpha as
+an ordinary band; automatic RGB-to-RGBA alpha synthesis is not supported. Existing
+per-dataset masks remain unchanged, as in the GDAL 3.13.3 update probes. Valid
+values can saturate to integer type bounds or collide with destination nodata,
+also matching those probes. Average updates between identical affine pixel grids use direct copying when
+their origin offsets are integer to within 1e-7 pixels; fractional offsets retain
+area-based resampling.
+Min/max overview methods are Terrio extensions; GDAL 3.13.3 gdaladdo refuses them.
+
+Raster in-place edits copy the whole TIFF, including for metadata-only changes, and
+need free disk space for that copy. Symlink targets and mode bits are preserved;
+replacement detaches hard links and does not preserve ownership, ACLs or extended
+attributes. The containing directory must be writable. The TIFF is committed before
+its histogram or external-overview sidecar: a later sidecar error can leave the TIFF
+updated with an unchanged sidecar.
+
+Building overviews reads the whole full-resolution image, and its mask, into memory
+once, shared by every level computed from it: memory grows with the raster. Partial
+refreshes (`--refresh --bbox`) keep window reads. Overview and raster-update
+arithmetic uses Float64 and warns for Int64/UInt64: values above 2^53 may lose precision,
+including nearest/mode overviews. Raster update holds the warped window and the full
+width of the destination rows it rewrites in memory.
