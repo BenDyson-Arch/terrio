@@ -34,6 +34,7 @@ pub mod vector_geom;
 pub mod vector_grid;
 pub mod vector_opts;
 pub mod viewshed;
+pub mod vsi;
 pub mod warp;
 pub mod xyz;
 
